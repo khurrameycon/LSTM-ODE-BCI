@@ -555,7 +555,12 @@ def plot_shap_analysis(shap_importance_df, shap_values, X_explain, channel_names
 
     for i, ch_idx in enumerate(top_10_idx[::-1]):
         ch_name = channel_names[ch_idx]
-        ch_shap = shap_values[:, ch_idx]
+        ch_shap_raw = shap_values[:, ch_idx]
+        # Handle multi-class SHAP values (shape: samples x classes)
+        if len(ch_shap_raw.shape) > 1:
+            ch_shap = ch_shap_raw[:, 1]  # Use positive class (eyes closed)
+        else:
+            ch_shap = ch_shap_raw
         ch_feature = X_explain[:, ch_idx]
 
         # Normalize feature values for coloring
@@ -607,7 +612,12 @@ def plot_shap_analysis(shap_importance_df, shap_values, X_explain, channel_names
     ax4 = fig.add_subplot(gs[1, 0])
     n_show = min(50, len(shap_values))
     top_channels_idx = [list(channel_names).index(ch) for ch in shap_importance_df.head(20)['Channel']]
-    heatmap_data = shap_values[:n_show, :][:, top_channels_idx]
+    heatmap_raw = shap_values[:n_show, :][:, top_channels_idx]
+    # Handle multi-class SHAP values
+    if len(heatmap_raw.shape) > 2:
+        heatmap_data = heatmap_raw[:, :, 1]  # Use positive class
+    else:
+        heatmap_data = heatmap_raw
 
     im = ax4.imshow(heatmap_data.T, aspect='auto', cmap='RdBu_r',
                    vmin=-np.percentile(np.abs(heatmap_data), 95),
@@ -624,16 +634,23 @@ def plot_shap_analysis(shap_importance_df, shap_values, X_explain, channel_names
     top_channel = shap_importance_df.iloc[0]['Channel']
     top_idx = list(channel_names).index(top_channel)
 
+    # Get SHAP values for top channel (handle multi-class)
+    shap_top_raw = shap_values[:, top_idx]
+    if len(shap_top_raw.shape) > 1:
+        shap_top = shap_top_raw[:, 1]  # Use positive class
+    else:
+        shap_top = shap_top_raw
+
     # Find most interacting channel
     correlations = []
     for i in range(len(channel_names)):
         if i != top_idx:
-            corr = np.abs(np.corrcoef(shap_values[:, top_idx], X_explain[:, i])[0, 1])
+            corr = np.abs(np.corrcoef(shap_top, X_explain[:, i])[0, 1])
             correlations.append((i, corr))
     interaction_idx = max(correlations, key=lambda x: x[1])[0]
     interaction_channel = channel_names[interaction_idx]
 
-    scatter = ax5.scatter(X_explain[:, top_idx], shap_values[:, top_idx],
+    scatter = ax5.scatter(X_explain[:, top_idx], shap_top,
                          c=X_explain[:, interaction_idx], cmap='coolwarm',
                          s=20, alpha=0.7, edgecolors='k', linewidth=0.3)
     ax5.set_xlabel(f'{top_channel} Value')
