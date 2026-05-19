@@ -137,6 +137,17 @@ figures/
 *.jpeg
 *.pdf
 
+# ...but allow figures embedded in repo documentation
+!docs/figures/
+!docs/figures/*.png
+
+# BCI Competition IV - Dataset 2a (download from Kaggle, see README)
+archive (1)/
+
+# Local task notes and IDE session state
+next-task.txt
+.claude/
+
 # IDE
 .idea/
 .vscode/
