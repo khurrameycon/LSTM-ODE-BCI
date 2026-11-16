@@ -149,9 +149,8 @@ figures/
 archive (1)/
 bciiv2b/
 
-# Local task notes and IDE session state
+# Local task notes
 next-task.txt
-.claude/
 
 # IDE
 .idea/
