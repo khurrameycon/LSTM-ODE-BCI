@@ -1,0 +1,163 @@
+{
+  "parameters": {
+    "k_ap": 0.001,
+    "k_af": 0.001,
+    "k_pa": 0.2888951323444814,
+    "k_pf": 0.2898493496305848,
+    "k_fa": 0.001,
+    "k_fp": 0.001
+  },
+  "steady_state": {
+    "Active": 0.4986144247228966,
+    "Passive": 0.0017248978260954852,
+    "Fatigued": 0.49966067745100806
+  },
+  "transition_matrix": [
+    [
+      -0.002,
+      0.001,
+      0.001
+    ],
+    [
+      0.2888951323444814,
+      -0.5787444819750662,
+      0.2898493496305848
+    ],
+    [
+      0.001,
+      0.001,
+      -0.002
+    ]
+  ],
+  "sensitivity": [
+    {
+      "parameter": "k_ap",
+      "sens_Active": -79.4870831717022,
+      "sens_Passive": 0.8608316654677055,
+      "sens_Fatigued": 78.62625150623455
+    },
+    {
+      "parameter": "k_af",
+      "sens_Active": -158.17059764236973,
+      "sens_Passive": 9.799995016879226e-11,
+      "sens_Fatigued": 158.17059764227162
+    },
+    {
+      "parameter": "k_pa",
+      "sens_Active": 0.29220211814597036,
+      "sens_Passive": -0.0030051214978394536,
+      "sens_Fatigued": -0.289196996648131
+    },
+    {
+      "parameter": "k_pf",
+      "sens_Active": -0.28826062200813446,
+      "sens_Passive": -0.003005320999319272,
+      "sens_Fatigued": 0.2912659430074538
+    },
+    {
+      "parameter": "k_fa",
+      "sens_Active": 158.84575068652512,
+      "sens_Passive": -7.902248674212034e-07,
+      "sens_Fatigued": -158.84574989630013
+    },
+    {
+      "parameter": "k_fp",
+      "sens_Active": 78.70077627448998,
+      "sens_Passive": 0.8626408186722877,
+      "sens_Fatigued": -79.56341709316264
+    }
+  ],
+  "fit": {
+    "loss": 0.000701630247518311,
+    "stability_across_seeds": {
+      "k_ap": {
+        "mean": 0.001,
+        "std": 0.0,
+        "min": 0.001,
+        "max": 0.001
+      },
+      "k_af": {
+        "mean": 0.001,
+        "std": 0.0,
+        "min": 0.001,
+        "max": 0.001
+      },
+      "k_pa": {
+        "mean": 0.3099652263825493,
+        "std": 0.029133275851150282,
+        "min": 0.2875420815635984,
+        "max": 0.3418763324283953
+      },
+      "k_pf": {
+        "mean": 0.30752356116575114,
+        "std": 0.027256951734097055,
+        "min": 0.286605826264076,
+        "max": 0.34300584244456583
+      },
+      "k_fa": {
+        "mean": 0.001,
+        "std": 0.0,
+        "min": 0.001,
+        "max": 0.001
+      },
+      "k_fp": {
+        "mean": 0.001,
+        "std": 0.0,
+        "min": 0.001,
+        "max": 0.001
+      }
+    },
+    "identifiability": {
+      "relative_tolerance": 0.05,
+      "parameters": {
+        "k_ap": {
+          "identifiable": true,
+          "max_relative_loss_change": 0.18520814496109314,
+          "time_constant_s": 1000.0,
+          "time_constant_meaning": "How long the fitted model keeps the observed compartment occupied during a constant-label block. This is not a fatigue-onset or recovery time."
+        },
+        "k_af": {
+          "identifiable": true,
+          "max_relative_loss_change": 0.361347512503235,
+          "time_constant_s": 1000.0,
+          "time_constant_meaning": "How long the fitted model keeps the observed compartment occupied during a constant-label block. This is not a fatigue-onset or recovery time."
+        },
+        "k_pa": {
+          "identifiable": false,
+          "max_relative_loss_change": 0.027793084943966515,
+          "time_constant_s": null,
+          "time_constant_meaning": "Not reported. Changing this rate does not change the fit to the eyes-open and eyes-closed labels."
+        },
+        "k_pf": {
+          "identifiable": false,
+          "max_relative_loss_change": 0.02770908125425675,
+          "time_constant_s": null,
+          "time_constant_meaning": "Not reported. Changing this rate does not change the fit to the eyes-open and eyes-closed labels."
+        },
+        "k_fa": {
+          "identifiable": true,
+          "max_relative_loss_change": 0.3610344055330231,
+          "time_constant_s": 1000.0,
+          "time_constant_meaning": "How long the fitted model keeps the observed compartment occupied during a constant-label block. This is not a fatigue-onset or recovery time."
+        },
+        "k_fp": {
+          "identifiable": true,
+          "max_relative_loss_change": 0.18448633703977052,
+          "time_constant_s": 1000.0,
+          "time_constant_meaning": "How long the fitted model keeps the observed compartment occupied during a constant-label block. This is not a fatigue-onset or recovery time."
+        }
+      },
+      "passive_to_fatigued_identified": false,
+      "interpretation": "The observation is binary. Eyes-open constrains Active and eyes-closed constrains Fatigued. Passive -> Fatigued is reported only when the profile says it changes the loss. A summed fatigue accumulation ratio is not computed."
+    },
+    "block_design": {
+      "n_training_recordings": 197,
+      "n_blocks_fit": 32,
+      "step_seconds": 0.256,
+      "within_recording_label_changes": 0,
+      "conclusion": "Eye-state labels are constant inside each recording. A rate fitted to these blocks describes the experimental block, not a within-block fatigue or recovery process. Stitching recordings together would create transitions only at the file boundaries."
+    }
+  },
+  "fatigue_accumulation_ratio": null,
+  "fatigue_accumulation_ratio_note": "Not reported. Adding rates that act on different compartments is not a proportion of transitions."
+}

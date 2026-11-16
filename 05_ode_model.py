@@ -44,7 +44,7 @@ warnings.filterwarnings('ignore')
 np.random.seed(42)
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -321,45 +321,30 @@ class CognitiveStateODE:
         self.params = fitted_params
         return fitted_params, result.fun
 
-    def _validate_params(self, params):
-        """Validate that fitted parameters are physiologically plausible."""
-        print("\nParameter Validation:")
-
-        # Check recovery vs fatigue balance
-        recovery_rate = params['k_fa'] + params['k_fp'] + params['k_pa']
-        fatigue_rate = params['k_af'] + params['k_pf']
-        balance = recovery_rate / (fatigue_rate + 1e-10)
-
-        if balance < 0.5:
-            print("  WARNING: Very high fatigue dominance (balance < 0.5)")
-        elif balance > 5.0:
-            print("  WARNING: Very high recovery dominance (balance > 5.0)")
-        else:
-            print(f"  Recovery/Fatigue balance: {balance:.2f} (healthy range)")
-
-        # Check for extreme rates
-        for k, v in params.items():
-            if v < 0.005:
-                print(f"  WARNING: Very slow transition {k}={v:.4f}")
-            elif v > 0.4:
-                print(f"  WARNING: Very fast transition {k}={v:.4f}")
+    def _validate_params(self, params, identifiability=None):
+        """Print which rates the binary labels can and cannot constrain."""
+        print("\nParameter report:")
+        identifiable = {}
+        if identifiability:
+            identifiable = identifiability.get('parameters', {})
+        for name, value in params.items():
+            flag = identifiable.get(name, {}).get('identifiable')
+            status = 'untested' if flag is None else ('constrained' if flag else 'not identified')
+            time_constant = (1.0 / value) if value > 0 else float('inf')
+            print(f"  {name}={value:.4f}  ({status})")
+            if flag:
+                print(f"    time constant {time_constant:.2f} s means the observed block stayed in that compartment")
+            elif flag is False:
+                print("    no time constant is reported; the labels do not constrain this rate")
 
 
 def map_eye_state_to_cognitive(eye_states, window_size=20):
-    """Map binary eye states to three cognitive states using windowed analysis.
+    """Deprecated label invention. Not used to fit the reported model.
 
-    Mapping heuristic:
-    - Window with mostly open eyes and low variance -> Active
-    - Window with mixed states -> Passive
-    - Window with mostly closed eyes -> Fatigued
-
-    Args:
-        eye_states: Binary array (0=open, 1=closed)
-        window_size: Window for computing local statistics
-
-    Returns:
-        cognitive_states: Array of cognitive state labels (0=A, 1=P, 2=F)
-        proportions_over_time: Array of [A, P, F] proportions
+    Sliding a window over binary eyes-open/eyes-closed labels and calling
+    the mixed windows Passive manufactures a third state that the
+    recordings do not contain. The fitting routine below does not call
+    this function.
     """
     n = len(eye_states)
     cognitive_states = np.zeros(n)
@@ -395,17 +380,17 @@ def map_eye_state_to_cognitive(eye_states, window_size=20):
     return cognitive_states, np.array(proportions_list)
 
 
-def load_and_prepare_data():
-    """Load preprocessed EEG data and prepare for ODE fitting.
+def load_and_prepare_data(max_blocks_per_class=16, max_duration_s=30.0):
+    """Build constant-label blocks from the training recordings only.
 
-    Updated to load from BIDS-format preprocessed data instead of CSV.
-    Uses eye state labels from the sequences (0=open, 1=closed).
+    Test recordings are not used. Recordings are not stitched into one
+    series: each eyes-open or eyes-closed file is its own block, and the
+    label is constant inside it. Passive is not assigned a target.
     """
     print("=" * 60)
-    print("Loading and Preparing Data for ODE Model")
+    print("Loading training blocks for the observable-margin ODE fit")
     print("=" * 60)
 
-    # Load preprocessed sequences
     data_path = PROCESSED_DATA_PATH / 'processed_sequences.npz'
     if not data_path.exists():
         raise FileNotFoundError(
@@ -414,53 +399,203 @@ def load_and_prepare_data():
         )
 
     data = np.load(data_path)
-
-    # Combine all eye states from train and test
     y_train = data['y_train']
-    y_test = data['y_test']
+    if 'recording_id_train' not in data.files:
+        raise RuntimeError(
+            "processed_sequences.npz has no recording_id_train. "
+            "Re-run 02_preprocessing.py so each window keeps its recording id."
+        )
+    recording_ids = data['recording_id_train']
+    meta_path = PROCESSED_DATA_PATH / 'preprocessing_metadata.json'
+    step_seconds = 0.256
+    if meta_path.exists():
+        with open(meta_path) as handle:
+            step_seconds = float(json.load(handle).get('step_seconds', step_seconds))
 
-    # Concatenate to get full eye state sequence
-    eye_states = np.concatenate([y_train, y_test])
+    blocks = []
+    for recording_id in _stable_unique(recording_ids):
+        mask = recording_ids == recording_id
+        labels = y_train[mask]
+        if len(np.unique(labels)) != 1:
+            raise RuntimeError(
+                f"{recording_id} contains more than one label. "
+                "Windows must not cross a condition boundary."
+            )
+        duration = min(max_duration_s, max(step_seconds, len(labels) * step_seconds))
+        blocks.append({'recording_id': str(recording_id), 'label': int(labels[0]),
+                       'duration_s': float(duration), 'n_windows': int(len(labels))})
 
-    print(f"Total samples: {len(eye_states)}")
-    print(f"Eye open (0): {np.sum(eye_states == 0)} ({np.mean(eye_states == 0):.1%})")
-    print(f"Eye closed (1): {np.sum(eye_states == 1)} ({np.mean(eye_states == 1):.1%})")
+    rng = np.random.RandomState(42)
+    selected = []
+    for label in (0, 1):
+        pool = [block for block in blocks if block['label'] == label]
+        rng.shuffle(pool)
+        selected.extend(pool[:max_blocks_per_class])
+    if not selected:
+        raise RuntimeError("No training blocks available for the ODE fit")
 
-    # Map to cognitive states
-    cognitive_states, proportions = map_eye_state_to_cognitive(eye_states)
+    print(f"Training recordings: {len(blocks)}")
+    print(f"Blocks used in the fit: {len(selected)} "
+          f"(up to {max_blocks_per_class} per class, duration capped at {max_duration_s:.0f}s)")
+    print("Within each block the eye-state label is constant, so Passive is unobserved.")
 
-    print(f"\nCognitive State Mapping:")
-    print(f"  Active (0): {np.sum(cognitive_states == 0) / len(cognitive_states):.2%}")
-    print(f"  Passive (1): {np.sum(cognitive_states == 1) / len(cognitive_states):.2%}")
-    print(f"  Fatigued (2): {np.sum(cognitive_states == 2) / len(cognitive_states):.2%}")
+    # Display series for the figure only. P is 0 because it was not observed.
+    display = []
+    for block in selected[:8]:
+        row = [1.0, 0.0, 0.0] if block['label'] == 0 else [0.0, 0.0, 1.0]
+        display.extend([row] * 5)
+    return selected, np.asarray(display, dtype=float), {
+        'n_training_recordings': len(blocks),
+        'n_blocks_fit': len(selected),
+        'step_seconds': step_seconds,
+        'within_recording_label_changes': 0,
+        'conclusion': (
+            'Eye-state labels are constant inside each recording. A rate fitted '
+            'to these blocks describes the experimental block, not a within-block '
+            'fatigue or recovery process. Stitching recordings together would '
+            'create transitions only at the file boundaries.'
+        ),
+    }
 
-    return eye_states, cognitive_states, proportions
+
+def _stable_unique(values):
+    seen = []
+    for value in values:
+        text = str(value)
+        if text not in seen:
+            seen.append(text)
+    return seen
 
 
-def fit_ode_to_data(proportions):
-    """Fit the ODE model to observed cognitive state proportions."""
+def _observable_loss(model, param_array, blocks, regularize=True):
+    """Squared error on the observed compartment only.
+
+    Eyes-open blocks observe Active. Eyes-closed blocks observe Fatigued.
+    Passive is not in the loss, so a rate that only moves Passive is not
+    constrained. The penalty is used while fitting and is left out of the
+    identifiability profile.
+    """
+    params = {
+        'k_ap': param_array[0], 'k_af': param_array[1], 'k_pa': param_array[2],
+        'k_pf': param_array[3], 'k_fa': param_array[4], 'k_fp': param_array[5],
+    }
+    model.params = params
+    errors = []
+    for block in blocks:
+        initial = [1.0, 0.0, 0.0] if block['label'] == 0 else [0.0, 0.0, 1.0]
+        _, solution = model.solve(initial, (0.0, block['duration_s']), 20)
+        observed_index = 0 if block['label'] == 0 else 2
+        errors.append(np.mean((solution[:, observed_index] - 1.0) ** 2))
+    mse = float(np.mean(errors))
+    if not regularize:
+        return mse
+    return mse + 1e-4 * float(np.sum(np.square(param_array)))
+
+
+def profile_identifiability(model, blocks, reference_loss, relative_tolerance=0.05):
+    """A rate is identified when scaling it by 0.5 or 1.5 changes the loss."""
+    names = ['k_ap', 'k_af', 'k_pa', 'k_pf', 'k_fa', 'k_fp']
+    base = np.array([model.params[name] for name in names], dtype=float)
+    report = {}
+    for index, name in enumerate(names):
+        changes = []
+        absolute = []
+        for factor in (0.5, 1.5):
+            trial = base.copy()
+            trial[index] = np.clip(base[index] * factor, 1e-4, 1.0)
+            trial_loss = _observable_loss(model, trial, blocks, regularize=False)
+            absolute.append(abs(trial_loss - reference_loss))
+            denom = max(reference_loss, 1e-8)
+            changes.append(absolute[-1] / denom)
+        model.params = {key: float(value) for key, value in zip(names, base)}
+        identifiable = bool(max(changes) >= relative_tolerance and max(absolute) >= 1e-4)
+        entry = {
+            'identifiable': identifiable,
+            'max_relative_loss_change': float(max(changes)),
+        }
+        if identifiable and base[index] > 0:
+            entry['time_constant_s'] = float(1.0 / base[index])
+            entry['time_constant_meaning'] = (
+                'How long the fitted model keeps the observed compartment '
+                'occupied during a constant-label block. This is not a '
+                'fatigue-onset or recovery time.'
+            )
+        else:
+            entry['time_constant_s'] = None
+            entry['time_constant_meaning'] = (
+                'Not reported. Changing this rate does not change the fit to '
+                'the eyes-open and eyes-closed labels.'
+            )
+        report[name] = entry
+    return {
+        'relative_tolerance': relative_tolerance,
+        'parameters': report,
+        'passive_to_fatigued_identified': report['k_pf']['identifiable'],
+        'interpretation': (
+            'The observation is binary. Eyes-open constrains Active and '
+            'eyes-closed constrains Fatigued. Passive -> Fatigued is reported '
+            'only when the profile says it changes the loss. A summed fatigue '
+            'accumulation ratio is not computed.'
+        ),
+    }
+
+
+def fit_ode_to_data(blocks, seeds=(42, 0, 1, 7, 123)):
+    """Fit the six rates to the observable margin, then repeat across seeds."""
     print("\n" + "=" * 60)
-    print("Fitting ODE Model to Data")
+    print("Fitting ODE rates to the observable margin")
     print("=" * 60)
 
-    # Create time points
-    time_points = np.arange(len(proportions))
+    bounds = [
+        (0.001, 0.5), (0.001, 0.5), (0.001, 0.5),
+        (0.001, 0.5), (0.001, 0.5), (0.001, 0.5),
+    ]
+    names = ['k_ap', 'k_af', 'k_pa', 'k_pf', 'k_fa', 'k_fp']
+    seed_rows = []
+    best = None
+    for seed in seeds:
+        model = CognitiveStateODE()
 
-    # Initialize and fit model
-    ode_model = CognitiveStateODE()
+        def loss_function(param_array, _model=model):
+            return _observable_loss(_model, param_array, blocks)
 
-    print(f"Initial parameters: {ode_model.params}")
+        result = differential_evolution(
+            loss_function, bounds, seed=seed, maxiter=40, popsize=6,
+            tol=1e-5, polish=True, workers=1, updating='immediate',
+        )
+        params = {name: float(value) for name, value in zip(names, result.x)}
+        seed_rows.append({'seed': int(seed), 'loss': float(result.fun), 'params': params})
+        print(f"  seed {seed}: loss={result.fun:.6f}")
+        if best is None or result.fun < best[0]:
+            best = (float(result.fun), params, model)
 
-    fitted_params, loss = ode_model.fit_to_data(
-        proportions, time_points, method='differential_evolution'
+    loss, fitted_params, ode_model = best
+    ode_model.params = fitted_params
+    stacked = {name: [row['params'][name] for row in seed_rows] for name in names}
+    stability = {
+        name: {
+            'mean': float(np.mean(values)),
+            'std': float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+            'min': float(np.min(values)),
+            'max': float(np.max(values)),
+        }
+        for name, values in stacked.items()
+    }
+    data_loss = _observable_loss(
+        ode_model, np.array([fitted_params[name] for name in names]), blocks, regularize=False
     )
-
-    print(f"\nFitted parameters:")
-    for k, v in fitted_params.items():
-        print(f"  {k}: {v:.6f}")
-    print(f"\nFinal loss (MSE): {loss:.6f}")
-
-    return ode_model, fitted_params
+    identifiability = profile_identifiability(ode_model, blocks, data_loss)
+    ode_model.params = fitted_params
+    ode_model._validate_params(fitted_params, identifiability)
+    print("\nSeed stability (std across differential-evolution seeds):")
+    for name, summary in stability.items():
+        print(f"  {name}: mean={summary['mean']:.4f} std={summary['std']:.4f}")
+    return ode_model, fitted_params, {
+        'loss': loss,
+        'seeds': seed_rows,
+        'stability': stability,
+        'identifiability': identifiability,
+    }
 
 
 def analyze_dynamics(ode_model):
@@ -566,7 +701,7 @@ def plot_ode_analysis(ode_model, proportions, output_path):
 
     ax.set_xlabel('Time Window')
     ax.set_ylabel('State Proportion')
-    ax.set_title('Observed vs Fitted Trajectories', fontweight='bold')
+    ax.set_title('Observable margin vs fitted trajectory (Passive has no label)', fontweight='bold')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, alpha=0.3)
 
@@ -750,18 +885,28 @@ def sensitivity_analysis(ode_model, output_path):
     return sensitivity_results
 
 
-def save_ode_model(ode_model, fitted_params, steady_state, sensitivity_results):
+def save_ode_model(ode_model, fitted_params, steady_state, sensitivity_results, fit_report, block_report):
     """Save ODE model and results."""
     print("\n" + "=" * 60)
     print("Saving ODE Model and Results")
     print("=" * 60)
 
-    # Save parameters
     ode_results = {
         'parameters': fitted_params,
-        'steady_state': steady_state,
+        'steady_state': {key: float(value) for key, value in steady_state.items()},
         'transition_matrix': ode_model.get_transition_matrix().tolist(),
-        'sensitivity': sensitivity_results
+        'sensitivity': sensitivity_results,
+        'fit': {
+            'loss': fit_report['loss'],
+            'stability_across_seeds': fit_report['stability'],
+            'identifiability': fit_report['identifiability'],
+            'block_design': block_report,
+        },
+        'fatigue_accumulation_ratio': None,
+        'fatigue_accumulation_ratio_note': (
+            'Not reported. Adding rates that act on different compartments '
+            'is not a proportion of transitions.'
+        ),
     }
 
     with open(RESULTS_PATH / 'ode_results.json', 'w') as f:
@@ -769,12 +914,13 @@ def save_ode_model(ode_model, fitted_params, steady_state, sensitivity_results):
 
     print("Saved: ode_results.json")
 
-    # Save model parameters for LSTM-ODE integration
     import pickle
     with open(MODELS_PATH / 'ode_model.pkl', 'wb') as f:
         pickle.dump({
             'params': fitted_params,
-            'model_class': 'CognitiveStateODE'
+            'model_class': 'CognitiveStateODE',
+            'initial_condition_rule': 'revision_common.initial_state_from_probs',
+            'identifiability': fit_report['identifiability'],
         }, f)
 
     print("Saved: ode_model.pkl")
@@ -786,32 +932,25 @@ def main():
     print("ODE MODEL FOR COGNITIVE STATE EVOLUTION")
     print("=" * 60)
     print("Authors: Ayesha, Muhammad Khurram Umair")
-    print("Model: Active-Passive-Fatigued (APF)")
+    print("Fit target: observable eyes-open / eyes-closed margin")
     print("=" * 60)
 
-    # 1. Load and prepare data
-    eye_states, cognitive_states, proportions = load_and_prepare_data()
-
-    # 2. Fit ODE model
-    ode_model, fitted_params = fit_ode_to_data(proportions)
-
-    # 3. Analyze dynamics
+    blocks, proportions, block_report = load_and_prepare_data()
+    ode_model, fitted_params, fit_report = fit_ode_to_data(blocks)
     steady_state, Q = analyze_dynamics(ode_model)
-
-    # 4. Generate plots
     plot_ode_analysis(ode_model, proportions, FIGURES_PATH)
     plot_state_diagram(ode_model, FIGURES_PATH)
-
-    # 5. Sensitivity analysis
     sensitivity_results = sensitivity_analysis(ode_model, FIGURES_PATH)
-
-    # 6. Save results
-    save_ode_model(ode_model, fitted_params, steady_state, sensitivity_results)
+    save_ode_model(
+        ode_model, fitted_params, steady_state, sensitivity_results,
+        fit_report, block_report,
+    )
 
     print("\n" + "=" * 60)
     print("ODE MODEL ANALYSIS COMPLETE!")
     print("=" * 60)
-
+    k_pf = fit_report['identifiability']['parameters']['k_pf']
+    print(f"Passive->Fatigued identified: {k_pf['identifiable']}")
     return ode_model, fitted_params
 
 

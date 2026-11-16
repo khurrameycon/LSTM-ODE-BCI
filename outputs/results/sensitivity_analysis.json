@@ -1,0 +1,334 @@
+{
+  "ablation": {
+    "Full Model": {
+      "config": {
+        "bidirectional": true,
+        "use_attention": true,
+        "num_layers": 3
+      },
+      "metrics": {
+        "accuracy": 0.8764607679465777,
+        "f1": 0.8599637979266085,
+        "mcc": 0.7706884043071089,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    },
+    "No Attention": {
+      "config": {
+        "bidirectional": true,
+        "use_attention": false,
+        "num_layers": 3
+      },
+      "metrics": {
+        "accuracy": 0.9068737751324671,
+        "f1": 0.9000700989173611,
+        "mcc": 0.8191357670862123,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    },
+    "Unidirectional": {
+      "config": {
+        "bidirectional": false,
+        "use_attention": true,
+        "num_layers": 3
+      },
+      "metrics": {
+        "accuracy": 0.8814691151919867,
+        "f1": 0.8670664532059805,
+        "mcc": 0.7778104025543613,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    },
+    "1 Layer": {
+      "config": {
+        "bidirectional": true,
+        "use_attention": true,
+        "num_layers": 1
+      },
+      "metrics": {
+        "accuracy": 0.8921632672812175,
+        "f1": 0.8800495196059962,
+        "mcc": 0.7973763499702513,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    },
+    "2 Layers": {
+      "config": {
+        "bidirectional": true,
+        "use_attention": true,
+        "num_layers": 2
+      },
+      "metrics": {
+        "accuracy": 0.8771382255449904,
+        "f1": 0.8604101379954918,
+        "mcc": 0.7727937387535886,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    },
+    "Minimal": {
+      "config": {
+        "bidirectional": false,
+        "use_attention": false,
+        "num_layers": 1
+      },
+      "metrics": {
+        "accuracy": 0.8839853862718057,
+        "f1": 0.8688493203139958,
+        "mcc": 0.785299862318437,
+        "protocol": "all training windows, early stopping on validation F1"
+      }
+    }
+  },
+  "statistical_tests": {
+    "No Attention": {
+      "comparison_unit": "subject-level accuracy",
+      "sign_test_p": 0.2890625,
+      "subjects_baseline_better": 6,
+      "subjects_model_better": 2,
+      "ties": 0,
+      "cohens_dz": -0.3108399209251167,
+      "cohens_dz_definition": "mean(subject accuracy_baseline - subject accuracy_model) / sd of those paired subject differences",
+      "effect_size": "small",
+      "significant": false
+    },
+    "Unidirectional": {
+      "comparison_unit": "subject-level accuracy",
+      "sign_test_p": 0.7265625,
+      "subjects_baseline_better": 3,
+      "subjects_model_better": 5,
+      "ties": 0,
+      "cohens_dz": -0.4542739660797806,
+      "cohens_dz_definition": "mean(subject accuracy_baseline - subject accuracy_model) / sd of those paired subject differences",
+      "effect_size": "small",
+      "significant": false
+    },
+    "1 Layer": {
+      "comparison_unit": "subject-level accuracy",
+      "sign_test_p": 0.2890625,
+      "subjects_baseline_better": 2,
+      "subjects_model_better": 6,
+      "ties": 0,
+      "cohens_dz": -0.6145653323316344,
+      "cohens_dz_definition": "mean(subject accuracy_baseline - subject accuracy_model) / sd of those paired subject differences",
+      "effect_size": "medium",
+      "significant": false
+    },
+    "2 Layers": {
+      "comparison_unit": "subject-level accuracy",
+      "sign_test_p": 0.7265625,
+      "subjects_baseline_better": 3,
+      "subjects_model_better": 5,
+      "ties": 0,
+      "cohens_dz": -0.11444813475578282,
+      "cohens_dz_definition": "mean(subject accuracy_baseline - subject accuracy_model) / sd of those paired subject differences",
+      "effect_size": "negligible",
+      "significant": false
+    },
+    "Minimal": {
+      "comparison_unit": "subject-level accuracy",
+      "sign_test_p": 1.0,
+      "subjects_baseline_better": 4,
+      "subjects_model_better": 4,
+      "ties": 0,
+      "cohens_dz": -0.40312724708253783,
+      "cohens_dz_definition": "mean(subject accuracy_baseline - subject accuracy_model) / sd of those paired subject differences",
+      "effect_size": "small",
+      "significant": false
+    }
+  },
+  "bootstrap_ci": {
+    "Full Model": {
+      "accuracy": 0.8808923761795551,
+      "ci_lower": 0.814510244238596,
+      "ci_upper": 0.9377296741534185,
+      "se": 0.03315532403842912,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.1078460851712498
+    },
+    "No Attention": {
+      "accuracy": 0.9074069827927767,
+      "ci_lower": 0.8540132021940968,
+      "ci_upper": 0.9531707759659205,
+      "se": 0.02557348501456235,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.07855880490767772
+    },
+    "Unidirectional": {
+      "accuracy": 0.8884824326289273,
+      "ci_lower": 0.8263183267548415,
+      "ci_upper": 0.9423596196630363,
+      "se": 0.030366712366897728,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.09818653030866323
+    },
+    "1 Layer": {
+      "accuracy": 0.8983867053615235,
+      "ci_lower": 0.8442001649563952,
+      "ci_upper": 0.9491708430047531,
+      "se": 0.028044162350349722,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.09024001836992239
+    },
+    "2 Layers": {
+      "accuracy": 0.8833750847452325,
+      "ci_lower": 0.8213240003576586,
+      "ci_upper": 0.9409740776988414,
+      "se": 0.03152810298639945,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.1025038179213103
+    },
+    "Minimal": {
+      "accuracy": 0.8901604821729336,
+      "ci_lower": 0.8288256907746357,
+      "ci_upper": 0.9459234311655653,
+      "se": 0.031314766804374616,
+      "unit": "mean of subject-level accuracies",
+      "n_subjects": 8,
+      "subject_sd": 0.1000458942988791
+    }
+  },
+  "power_analysis": {
+    "unit": "subject-level accuracy, paired two-sided z test",
+    "alpha": 0.05,
+    "target_power": 0.8,
+    "assumed_subject_sd": 0.1078460851712498,
+    "n_test_subjects": 8,
+    "minimum_detectable_accuracy_difference": 0.10682262074340639,
+    "n_test_subjects_required_for_delta": 37,
+    "target_delta": 0.05,
+    "note": "The sample size is the number of test subjects. Overlapping windows are not independent observations. assumed_subject_sd is a design value; replace it with the empirical SD of subject-level accuracy after evaluation. A detectable difference larger than the gains being claimed means the test set cannot support that claim."
+  },
+  "component_contributions": {
+    "Attention": -0.030413007185889462,
+    "Bidirectional": -0.005008347245408995,
+    "Deep Layers (3 vs 1)": -0.015702499334639852
+  },
+  "coupling_sensitivity": [
+    {
+      "alpha": 0.0,
+      "accuracy": 0.8879291572911374,
+      "f1": 0.8750202363606929,
+      "mcc": 0.7894348316295248
+    },
+    {
+      "alpha": 0.25,
+      "accuracy": 0.8879291572911374,
+      "f1": 0.8750202363606929,
+      "mcc": 0.7894348316295248
+    },
+    {
+      "alpha": 0.5,
+      "accuracy": 0.8879291572911374,
+      "f1": 0.8750202363606929,
+      "mcc": 0.7894348316295248
+    },
+    {
+      "alpha": 0.75,
+      "accuracy": 0.8879291572911374,
+      "f1": 0.8750202363606929,
+      "mcc": 0.7894348316295248
+    },
+    {
+      "alpha": 1.0,
+      "accuracy": 0.8879291572911374,
+      "f1": 0.8750202363606929,
+      "mcc": 0.7894348316295248
+    }
+  ],
+  "hyperparameter_sensitivity": {
+    "hidden_and_dropout": {
+      "hidden_64": {
+        "config": {
+          "name": "hidden_64",
+          "hidden_size": 64,
+          "dropout": 0.4
+        },
+        "metrics": {
+          "accuracy": 0.8829691998741864,
+          "f1": 0.8692596697029489,
+          "mcc": 0.7797918158615301,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      },
+      "hidden_128": {
+        "config": {
+          "name": "hidden_128",
+          "hidden_size": 128,
+          "dropout": 0.4
+        },
+        "metrics": {
+          "accuracy": 0.9090755123273088,
+          "f1": 0.9032988523493387,
+          "mcc": 0.8220925599808593,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      },
+      "hidden_256": {
+        "config": {
+          "name": "hidden_256",
+          "hidden_size": 256,
+          "dropout": 0.4
+        },
+        "metrics": {
+          "accuracy": 0.8878565725484503,
+          "f1": 0.8739975533505505,
+          "mcc": 0.7914039093252674,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      },
+      "dropout_0.2": {
+        "config": {
+          "name": "dropout_0.2",
+          "hidden_size": 256,
+          "dropout": 0.2
+        },
+        "metrics": {
+          "accuracy": 0.9037284362826934,
+          "f1": 0.8950048816529013,
+          "mcc": 0.8160277817338056,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      },
+      "dropout_0.5": {
+        "config": {
+          "name": "dropout_0.5",
+          "hidden_size": 256,
+          "dropout": 0.5
+        },
+        "metrics": {
+          "accuracy": 0.9073576734170478,
+          "f1": 0.8996724747805581,
+          "mcc": 0.8218674407489186,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      }
+    },
+    "window_length": {
+      "win128": {
+        "status": "run",
+        "sequence_length": 128,
+        "metrics": {
+          "accuracy": 0.8611755374761155,
+          "f1": 0.841362263114529,
+          "mcc": 0.7427922839104991,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      },
+      "win512": {
+        "status": "run",
+        "sequence_length": 512,
+        "metrics": {
+          "accuracy": 0.9218062750464275,
+          "f1": 0.9168399168399168,
+          "mcc": 0.8471980356384465,
+          "protocol": "all training windows, early stopping on validation F1"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+Model,Accuracy,Precision,Recall,F1,MCC,95% CI,CI unit
+SVM,0.8848,0.8489,0.9334,0.8892,0.7735,"[0.8635, 0.9113]",subject-level bootstrap
+Random Forest,0.8888,0.8694,0.9125,0.8904,0.7786,"[0.8416, 0.9178]",subject-level bootstrap
+XGBoost,0.9018,0.8760,0.9338,0.9040,0.8054,"[0.8728, 0.9284]",subject-level bootstrap

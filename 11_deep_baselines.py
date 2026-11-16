@@ -17,6 +17,8 @@ Models
 ------
 1. EEGNet     - Lawhern et al. (2018)  https://doi.org/10.1088/1741-2552/aace8c
 2. DeepConvNet - Schirrmeister et al. (2017)  https://doi.org/10.1002/hbm.23730
+3. CNN-LSTM    - temporal convolution followed by a bidirectional LSTM
+4. EEG-Transformer - compact temporal Transformer on non-overlapping patches
 
 Outputs
 -------
@@ -28,6 +30,7 @@ Outputs
 - outputs/figures/fig29_deep_baselines_comparison.png
 """
 
+import os
 import sys
 import time
 import json
@@ -51,6 +54,11 @@ from sklearn.metrics import (
     roc_auc_score, roc_curve, confusion_matrix, matthews_corrcoef
 )
 
+from revision_common import (
+    claim_or_wait, paired_cohens_dz, release_lock, subject_bootstrap_ci, subject_sign_test,
+)
+from sequence_mmap import WindowDataset, apply_gpu_cap, load_mmap_splits, mmap_ready, worker_count
+
 # Reproducibility
 np.random.seed(42)
 torch.manual_seed(42)
@@ -62,7 +70,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {DEVICE}")
 
 # Paths (match 04_lstm_model.py layout)
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 PROCESSED_DATA_PATH = BASE_PATH / 'outputs' / 'processed_data'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -222,6 +230,78 @@ class DeepConvNet(nn.Module):
         return self.classifier(x)
 
 
+class CNNLSTM(nn.Module):
+    """Temporal convolution followed by a bidirectional LSTM.
+
+    This is the third deep baseline. EEGNet and DeepConvNet are the other two.
+    """
+
+    def __init__(self, n_channels=61, n_samples=256, n_classes=2, dropout=0.5):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_channels, 32, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm1d(32),
+            nn.ELU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(dropout),
+        )
+        self.lstm = nn.LSTM(32, 64, batch_first=True, bidirectional=True)
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(128, n_classes)
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.permute(0, 2, 1)
+        x = self.conv(x).permute(0, 2, 1)
+        output, _ = self.lstm(x)
+        pooled = output.mean(dim=1)
+        return self.classifier(self.dropout(pooled))
+
+
+class EEGTransformer(nn.Module):
+    """Compact temporal Transformer baseline.
+
+    The 256-sample window is split into non-overlapping patches, linearly
+    projected, and encoded with a small Transformer. This is the Transformer
+    comparison named by the reviewer, trained on the same split and metrics
+    as EEGNet, DeepConvNet, and CNN-LSTM.
+    """
+
+    def __init__(self, n_channels=61, n_samples=256, n_classes=2,
+                 patch_size=16, d_model=64, nhead=4, num_layers=2,
+                 dim_feedforward=128, dropout=0.4):
+        super().__init__()
+        if n_samples % patch_size != 0:
+            raise ValueError("n_samples must be divisible by patch_size")
+        self.patch_size = patch_size
+        self.n_patches = n_samples // patch_size
+        self.input_proj = nn.Linear(patch_size * n_channels, d_model)
+        self.pos = nn.Parameter(torch.zeros(1, self.n_patches, d_model))
+        nn.init.normal_(self.pos, std=0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            activation='gelu',
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(d_model, n_classes)
+
+    def forward(self, x):
+        # (batch, time, channels)
+        if x.dim() == 4:
+            x = x.squeeze(1)
+        batch, _, channels = x.shape
+        x = x.reshape(batch, self.n_patches, self.patch_size * channels)
+        x = self.input_proj(x) + self.pos
+        x = self.norm(self.encoder(x).mean(dim=1))
+        return self.classifier(self.dropout(x))
+
+
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
@@ -232,6 +312,10 @@ def load_data():
     print("Loading Processed Data")
     print("=" * 60)
 
+    if os.environ.get("EEG_MMAP") == "1" and mmap_ready():
+        print("Loading memory-mapped sequences (no full-array copy)")
+        return load_mmap_splits()
+
     data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
 
     X_train = data['X_train']
@@ -239,15 +323,16 @@ def load_data():
     X_test = data['X_test']
     y_test = data['y_test']
 
+    subject_id_test = data['subject_id_test'] if 'subject_id_test' in data.files else None
+
     if 'X_val' in data.files and len(data['X_val']) > 0:
         X_val = data['X_val']
         y_val = data['y_val']
     else:
-        n_val = int(len(X_train) * 0.15)
-        idx = np.random.permutation(len(X_train))
-        X_val, y_val = X_train[idx[:n_val]], y_train[idx[:n_val]]
-        X_train, y_train = X_train[idx[n_val:]], y_train[idx[n_val:]]
-        print("Created validation set from training data (15%)")
+        raise RuntimeError(
+            "Validation subjects are missing. Re-run 02_preprocessing.py. "
+            "A random window split is not used."
+        )
 
     print(f"X_train: {X_train.shape}")
     print(f"X_val:   {X_val.shape}")
@@ -256,11 +341,31 @@ def load_data():
     print(f"Class balance - Train: {np.mean(y_train):.1%}, "
           f"Val: {np.mean(y_val):.1%}, Test: {np.mean(y_test):.1%}")
 
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train, y_train, X_val, y_val, X_test, y_test, subject_id_test
 
 
 def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, batch_size=128):
     pin = DEVICE.type == 'cuda'
+    batch_size = int(os.environ.get("EEG_BATCH", batch_size))
+    if isinstance(X_tr, np.memmap):
+        workers = worker_count(0)
+        persistent = workers > 0
+        train = DataLoader(
+            WindowDataset(X_tr, y_tr),
+            batch_size=batch_size, shuffle=True, pin_memory=pin,
+            num_workers=workers, persistent_workers=persistent, drop_last=False,
+        )
+        val = DataLoader(
+            WindowDataset(X_va, y_va),
+            batch_size=batch_size * 2, shuffle=False, pin_memory=pin,
+            num_workers=workers, persistent_workers=persistent,
+        )
+        test = DataLoader(
+            WindowDataset(X_te, y_te),
+            batch_size=batch_size * 2, shuffle=False, pin_memory=pin,
+            num_workers=workers, persistent_workers=persistent,
+        )
+        return train, val, test
     train = DataLoader(
         TensorDataset(torch.FloatTensor(X_tr), torch.LongTensor(y_tr)),
         batch_size=batch_size, shuffle=True, pin_memory=pin, drop_last=False,
@@ -373,7 +478,7 @@ def train_model(model, train_loader, val_loader, y_train, model_name,
     return model, history
 
 
-def evaluate(model, test_loader, y_test, model_name):
+def evaluate(model, test_loader, y_test, model_name, subject_ids=None):
     print(f"\nEvaluating {model_name}")
     model.eval()
     preds, probs = [], []
@@ -397,13 +502,11 @@ def evaluate(model, test_loader, y_test, model_name):
     mcc = matthews_corrcoef(y_test, preds)
     cm = confusion_matrix(y_test, preds)
 
-    # Bootstrap CI on accuracy (same as 04_lstm_model.py)
-    rng = np.random.default_rng(42)
-    boot = []
-    for _ in range(1000):
-        idx = rng.integers(0, len(y_test), len(y_test))
-        boot.append(accuracy_score(y_test[idx], preds[idx]))
-    ci_low, ci_high = np.percentile(boot, [2.5, 97.5])
+    if subject_ids is not None and len(subject_ids) == len(y_test):
+        ci_low, ci_high, _ = subject_bootstrap_ci((preds == y_test).astype(float), subject_ids)
+        ci_unit = 'subject-level bootstrap'
+    else:
+        raise RuntimeError('Subject ids are required for the accuracy interval.')
 
     print(f"  Accuracy:  {acc:.4f}  (95% CI [{ci_low:.4f}, {ci_high:.4f}])")
     print(f"  Precision: {prec:.4f}")
@@ -423,6 +526,7 @@ def evaluate(model, test_loader, y_test, model_name):
         'mcc': float(mcc),
         'accuracy_ci_low': float(ci_low),
         'accuracy_ci_high': float(ci_high),
+        'ci_unit': ci_unit,
         'confusion_matrix': cm.tolist(),
         'y_pred': preds.tolist(),
         'y_prob': probs.tolist(),
@@ -591,8 +695,39 @@ def plot_full_comparison(results, output_path):
 # Main
 # ---------------------------------------------------------------------------
 
+def _saved_model_result(name):
+    path = RESULTS_PATH / f"{name.lower()}_results.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path) as handle:
+            saved = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if 'accuracy' not in saved or 'y_pred' not in saved:
+        return None
+    return saved
+
+
+def _deep_ready():
+    requested = os.environ.get("EEG_MODELS", "EEGNet,DeepConvNet,CNN-LSTM,EEG-Transformer")
+    return all(_saved_model_result(name.strip()) is not None for name in requested.split(",") if name.strip())
+
+
 def main():
-    X_train, y_train, X_val, y_val, X_test, y_test = load_data()
+    lock_path = MODELS_PATH / 'deep_baselines.lock'
+    if not claim_or_wait(lock_path, _deep_ready):
+        print("Requested deep baselines already have results. Skipping.")
+        return
+    try:
+        _train_deep_baselines()
+    finally:
+        release_lock(lock_path)
+
+
+def _train_deep_baselines():
+    apply_gpu_cap()
+    X_train, y_train, X_val, y_val, X_test, y_test, subject_ids = load_data()
     n_channels = X_train.shape[2]
     n_samples = X_train.shape[1]
 
@@ -603,11 +738,23 @@ def main():
     models_to_run = {
         'EEGNet':       EEGNet(n_channels=n_channels, n_samples=n_samples),
         'DeepConvNet':  DeepConvNet(n_channels=n_channels, n_samples=n_samples),
+        'CNN-LSTM':     CNNLSTM(n_channels=n_channels, n_samples=n_samples),
+        'EEG-Transformer': EEGTransformer(n_channels=n_channels, n_samples=n_samples),
     }
+    requested = os.environ.get("EEG_MODELS")
+    if requested:
+        wanted = {name.strip() for name in requested.split(",") if name.strip()}
+        models_to_run = {name: model for name, model in models_to_run.items() if name in wanted}
 
     histories = {}
     results = {}
-    for name, model in models_to_run.items():
+    for name, model in list(models_to_run.items()):
+        saved = _saved_model_result(name)
+        if saved is not None:
+            print(f"\n{name} results already exist. Skipping training.")
+            results[name] = saved
+            histories[name] = saved.get('history', {})
+            continue
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"\n{name} parameters: {n_params:,}")
 
@@ -617,7 +764,7 @@ def main():
         )
         histories[name] = history
 
-        r = evaluate(model, test_loader, y_test, name)
+        r = evaluate(model, test_loader, y_test, name, subject_ids=np.asarray(subject_ids) if subject_ids is not None else None)
         results[name] = r
 
         # Save weights + per-model results
@@ -638,6 +785,27 @@ def main():
         json.dump({k: {kk: vv for kk, vv in v.items()
                        if kk not in ('y_pred', 'y_prob')} for k, v in results.items()},
                   f, indent=2)
+
+    comparisons = {}
+    names = list(results)
+    if subject_ids is not None:
+        for i, left in enumerate(names):
+            for right in names[i + 1:]:
+                correct_l = (np.asarray(results[left]['y_pred']) == y_test).astype(float)
+                correct_r = (np.asarray(results[right]['y_pred']) == y_test).astype(float)
+                sign = subject_sign_test(correct_l, correct_r, subject_ids)
+                effect = paired_cohens_dz(correct_l, correct_r, subject_ids)
+                comparisons[f'{left} vs {right}'] = {
+                    **sign,
+                    'cohens_dz': effect,
+                    'cohens_dz_definition': (
+                        'mean paired subject-level accuracy difference divided by '
+                        'the SD of those differences'
+                    ),
+                }
+                print(f"{left} vs {right}: sign-test p={sign['p_value']:.4f}, d_z={effect:.3f}")
+    with open(RESULTS_PATH / 'deep_baseline_subject_tests.json', 'w') as f:
+        json.dump(comparisons, f, indent=2)
 
     # Plots
     plot_training_histories(histories, FIGURES_PATH)

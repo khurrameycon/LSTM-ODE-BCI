@@ -33,6 +33,7 @@ import seaborn as sns
 from tqdm import tqdm
 import warnings
 import torch
+from revision_common import subject_bootstrap_ci
 
 warnings.filterwarnings('ignore')
 
@@ -54,7 +55,7 @@ except ImportError:
 np.random.seed(42)
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 PROCESSED_DATA_PATH = BASE_PATH / 'outputs' / 'processed_data'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -148,8 +149,11 @@ def load_or_extract_features(X_train, y_train, X_val, y_val, X_test, y_test, cha
     return X_train_feat, X_val_feat, X_test_feat, feature_names
 
 
-def extract_features_gpu(X, channel_names, fs=500, batch_size=10000):
+def extract_features_gpu(X, channel_names, fs=500, batch_size=4096):
     """GPU-accelerated feature extraction using PyTorch.
+
+    Each batch is copied to the GPU on its own. The full training array
+    does not fit in an 8 GB GPU.
 
     Features per channel (20 total):
     - Time domain: mean, std, var, min, max, range, skew, kurt, zcr, energy,
@@ -162,10 +166,7 @@ def extract_features_gpu(X, channel_names, fs=500, batch_size=10000):
     n_samples, seq_len, n_channels = X.shape
     n_features_per_channel = 20  # 13 time + 7 freq
 
-    # Convert to torch tensor on GPU
-    X_tensor = torch.from_numpy(X).float().to(DEVICE)
-
-    # Prepare frequency bands indices
+    # Frequency-band indices stay on the GPU. Windows are uploaded per batch.
     freqs = torch.fft.rfftfreq(seq_len, 1/fs).to(DEVICE)
     delta_mask = (freqs >= 0.5) & (freqs < 4)
     theta_mask = (freqs >= 4) & (freqs < 8)
@@ -177,7 +178,9 @@ def extract_features_gpu(X, channel_names, fs=500, batch_size=10000):
 
     for start_idx in tqdm(range(0, n_samples, batch_size), desc="GPU feature extraction"):
         end_idx = min(start_idx + batch_size, n_samples)
-        batch = X_tensor[start_idx:end_idx]  # (batch, seq, ch)
+        batch = torch.from_numpy(
+            np.ascontiguousarray(X[start_idx:end_idx], dtype=np.float32)
+        ).to(DEVICE)  # (batch, seq, ch)
         batch_size_actual = batch.shape[0]
 
         batch_features = []
@@ -250,6 +253,7 @@ def extract_features_gpu(X, channel_names, fs=500, batch_size=10000):
         # Concatenate all channels: (batch, n_channels * 20)
         batch_features = torch.cat(batch_features, dim=1)
         all_features.append(batch_features.cpu().numpy())
+        del batch, batch_features
 
     features = np.concatenate(all_features, axis=0)
 
@@ -597,8 +601,8 @@ def train_xgboost(X_train, y_train, X_val, y_val):
     return best_model, best_params
 
 
-def evaluate_model(model, X_test, y_test, model_name):
-    """Comprehensive model evaluation with bootstrap CI."""
+def evaluate_model(model, X_test, y_test, model_name, subject_ids):
+    """Evaluate one baseline. The accuracy interval resamples subjects."""
     print(f"\n{'=' * 60}")
     print(f"Evaluating {model_name}")
     print("=" * 60)
@@ -633,17 +637,18 @@ def evaluate_model(model, X_test, y_test, model_name):
     print(f"\nConfusion Matrix:")
     print(cm)
 
-    # Bootstrap CI
-    n_bootstrap = 1000
-    bootstrap_accs = []
-    for _ in range(n_bootstrap):
-        indices = np.random.choice(len(y_test), len(y_test), replace=True)
-        bootstrap_accs.append(accuracy_score(y_test[indices], y_pred[indices]))
+    subject_ids = np.asarray(subject_ids)
+    if len(subject_ids) != len(y_test):
+        raise RuntimeError(
+            f"{model_name}: subject ids ({len(subject_ids)}) do not match "
+            f"the test set ({len(y_test)})."
+        )
+    correct = (y_pred == y_test).astype(float)
+    ci_low, ci_high, ci_se = subject_bootstrap_ci(correct, subject_ids)
+    n_subjects = int(len(np.unique(subject_ids)))
 
-    ci_low = np.percentile(bootstrap_accs, 2.5)
-    ci_high = np.percentile(bootstrap_accs, 97.5)
-
-    print(f"\n95% CI for Accuracy: [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"\n95% CI for Accuracy (subject-level, n={n_subjects}): "
+          f"[{ci_low:.4f}, {ci_high:.4f}]")
 
     results = {
         'model_name': model_name,
@@ -655,6 +660,9 @@ def evaluate_model(model, X_test, y_test, model_name):
         'mcc': mcc,
         'accuracy_ci_low': ci_low,
         'accuracy_ci_high': ci_high,
+        'ci_se': ci_se,
+        'ci_unit': 'subject-level bootstrap',
+        'n_subjects': n_subjects,
         'confusion_matrix': cm.tolist(),
         'y_pred': y_pred.tolist(),
         'y_prob': y_prob.tolist()
@@ -703,7 +711,7 @@ def plot_comparison(results_dict, output_path):
     bars = ax.bar(models, accuracies, color=colors, edgecolor='black',
                   yerr=errors, capsize=5)
     ax.set_ylabel('Accuracy')
-    ax.set_title('Accuracy with 95% Bootstrap CI', fontweight='bold')
+    ax.set_title('Accuracy with 95% subject-level CI', fontweight='bold')
     ax.set_ylim([0, 1.1])
     plt.xticks(rotation=15, ha='right')
 
@@ -787,7 +795,8 @@ def save_results(results_dict, feature_names, output_path):
             'Recall': f"{results['recall']:.4f}",
             'F1': f"{results['f1']:.4f}",
             'MCC': f"{results['mcc']:.4f}",
-            '95% CI': f"[{results['accuracy_ci_low']:.4f}, {results['accuracy_ci_high']:.4f}]"
+            '95% CI': f"[{results['accuracy_ci_low']:.4f}, {results['accuracy_ci_high']:.4f}]",
+            'CI unit': results.get('ci_unit', 'subject-level bootstrap'),
         })
 
     summary_df = pd.DataFrame(summary)
@@ -901,11 +910,19 @@ def main():
     with open(MODELS_PATH / 'feature_scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
 
+    subject_path = PROCESSED_DATA_PATH / 'mmap' / 'subject_id_test.npy'
+    if not subject_path.exists():
+        raise RuntimeError(
+            "Test subject ids are missing. The accuracy interval has to "
+            "resample subjects, not overlapping windows."
+        )
+    subject_ids = np.load(subject_path)
+
     results_dict = {}
 
     # 4. Train SVM
     svm_model, svm_params = train_svm(X_train_feat, y_train, X_val_feat, y_val)
-    results_dict['SVM'] = evaluate_model(svm_model, X_test_feat, y_test, 'SVM')
+    results_dict['SVM'] = evaluate_model(svm_model, X_test_feat, y_test, 'SVM', subject_ids)
     results_dict['SVM']['params'] = svm_params
 
     with open(MODELS_PATH / 'svm_model.pkl', 'wb') as f:
@@ -913,7 +930,7 @@ def main():
 
     # 5. Train Random Forest
     rf_model, rf_params = train_random_forest(X_train_feat, y_train, X_val_feat, y_val)
-    results_dict['Random Forest'] = evaluate_model(rf_model, X_test_feat, y_test, 'Random Forest')
+    results_dict['Random Forest'] = evaluate_model(rf_model, X_test_feat, y_test, 'Random Forest', subject_ids)
     results_dict['Random Forest']['params'] = rf_params
 
     with open(MODELS_PATH / 'rf_model.pkl', 'wb') as f:
@@ -921,7 +938,7 @@ def main():
 
     # 6. Train XGBoost
     xgb_model, xgb_params = train_xgboost(X_train_feat, y_train, X_val_feat, y_val)
-    results_dict['XGBoost'] = evaluate_model(xgb_model, X_test_feat, y_test, 'XGBoost')
+    results_dict['XGBoost'] = evaluate_model(xgb_model, X_test_feat, y_test, 'XGBoost', subject_ids)
     results_dict['XGBoost']['params'] = xgb_params
 
     with open(MODELS_PATH / 'xgb_model.pkl', 'wb') as f:

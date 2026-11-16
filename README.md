@@ -2,387 +2,158 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A novel unified framework integrating Long Short-Term Memory (LSTM) networks with a three-state compartmental Ordinary Differential Equation (ODE) model for interpretable cognitive state evolution in Brain-Computer Interfaces (BCIs).
+Code and saved results for a framework that couples a bidirectional LSTM-Attention classifier with a three-state
+(Active, Passive, Fatigued) compartmental ordinary differential equation (ODE) model, together with the subject-level
+evaluation used to test what each component contributes.
 
-## Overview
-
-This repository contains the implementation for the paper:
+## Paper
 
 > **Deep Learning and Dynamical Modeling Framework for EEG-Based Cognitive State Evolution in Brain-Computer Interfaces**
 >
-> Muhammad Khurram Umair¹*, Ayesha Arif², Muhammad Faisal Abrar³
+> Muhammad Khurram Umair, Ayesha Arif, Muhammad Faisal Abrar, Sikandar Ali, It Ee Lee, Salman Jan
 >
-> ¹University of Engineering and Technology, Peshawar, Pakistan
-> ²National University of Sciences and Technology (NUST), Islamabad, Pakistan
-> ³University of Hail, Saudi Arabia
+> Manuscript under review at *Scientific Reports*.
 
-## Key Features
+Every number in the manuscript's tables and figures is read from the files in `outputs/results/`, which are
+included in this repository (see [Reproducing the paper](#reproducing-the-paper)).
 
-- **LSTM-ODE Integration**: Probabilistic coupling between deep learning classification and mechanistic ODE dynamics
-- **Three-State Cognitive Model**: Active, Passive, and Fatigued states with interpretable transition rates
-- **Multi-Method Explainability**: Gradient-based attribution, permutation importance, and SHAP analysis
-- **Comprehensive Pipeline**: From raw EEG preprocessing to model evaluation and visualization
+## Main findings
+
+- On eight held-out test subjects, LSTM-Attention and LSTM-ODE reach an accuracy of 0.888 (subject-level 95% CI
+  0.835–0.950), within the range of three feature-based and four deep-learning baselines (0.885–0.922). No
+  subject-level comparison is significant; with eight test subjects only differences of about 0.107 can be detected.
+- The coupled ODE does not change any classification decision: its read-out is the classifier probability with the
+  threshold shifted by less than 0.001 (Proposition 1 of the paper).
+- The ODE does not improve temporal consistency (a moving average or majority vote does) or forecasting (persistence
+  is more accurate).
+- Fitted to eyes-open/eyes-closed recordings, four rates converge to the lower bound and the two rates leaving the
+  unobserved Passive state are not identifiable (Proposition 2). The rates are therefore not interpreted
+  physiologically.
+- Zeroing seven frontopolar channels reduces accuracy to 0.583, zeroing eight occipital channels only to 0.849: the
+  classifier relies substantially on ocular activity.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    EEG Input Sequence                       │
-│                   (T × C) = 256 × 61                        │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Bidirectional LSTM                         │
-│              (3 layers, 128 hidden units)                   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                Self-Attention Pooling                       │
-│                  (Temporal weighting)                       │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│               Classification Head                           │
-│            P(open), P(closed) → [0, 1]                      │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-          ┌───────────────┴───────────────┐
-          │   Probabilistic Coupling      │
-          │   k'_AF = k_AF(1 + αP_closed) │
-          │   k'_FA = k_FA(1 + αP_open)   │
-          └───────────────┬───────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Three-State ODE Model                          │
-│         dA/dt, dP/dt, dF/dt (A + P + F = 1)                │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│            Cognitive State Trajectory                       │
-│              [Active, Passive, Fatigued]                    │
-└─────────────────────────────────────────────────────────────┘
+EEG window (256 samples x 61 channels, 0.512 s)
+        |
+Linear projection 61 -> 256, LayerNorm, GELU
+        |
+3-layer bidirectional LSTM (256 units per direction) + LayerNorm
+        |
+Attention pooling over 256 time steps
+        |
+MLP 512 -> 256 -> 128 -> 2  ->  P(open), P(closed)
+        |
+Initial state  P0 = min(P_open, P_closed)/2,  A0 = (1-P0) P_open,  F0 = (1-P0) P_closed
+Coupling       k'_AF, k'_PF scaled by (1 + alpha P_closed);  k'_FA, k'_PA scaled by (1 + alpha P_open)
+        |
+Three-state ODE  dA/dt, dP/dt, dF/dt  (A + P + F = 1), integrated for 20 s
+        |
+Eyes closed if F(20 s) > 0.5
 ```
 
 ## Datasets
 
-The framework is evaluated on two complementary EEG benchmarks.
+The datasets are not redistributed with this repository.
 
-### Dataset 1 — OpenNeuro ds004148 (binary: eyes open vs closed)
-
-- **Source**: [OpenNeuro ds004148](https://openneuro.org/datasets/ds004148)
-- **DOI**: 10.18112/openneuro.ds004148.v1.0.0
-- **Participants**: 60 subjects (this study uses 30 with downloaded data)
-- **Sessions**: 3 per participant
-- **Channels**: 61 EEG channels (Brain Products, 64-electrode system)
-- **Sampling Rate**: 500 Hz
-- **Tasks**: Resting state — eyes open / eyes closed (binary classification)
-
-Download via the provided helper script (only the eyes-open/closed
-recordings, ~13 GB):
+**OpenNeuro ds004148** (main analysis): 60 healthy participants (18–28 years), three sessions, 61 EEG channels at
+500 Hz; eyes-open and eyes-closed resting recordings of 300 s. Download the resting recordings (about 14 GB) to
+`Dataset/II` with
 
 ```bash
 python download_dataset.py --yes
 ```
 
-### Dataset 2 — BCI Competition IV, Dataset 2a (4-class motor imagery)
+**BCI Competition IV 2a and 2b** (classification-only results in Supplementary Note 1; the ODE is not applied to
+motor imagery):
 
-- **Source**: [Kaggle: bci-competition-iv-data-sets-2a](https://www.kaggle.com/datasets/thngdngvn/bci-competition-iv-data-sets-2a)
-- **Reference**: [bbci.de/competition/iv/#dataset2a](https://www.bbci.de/competition/iv/#dataset2a)
-- **Participants**: 9 subjects (A01–A09), training files (`*T.mat`)
-- **Channels**: 22 EEG (+ 3 EOG, discarded) at 250 Hz
-- **Trials**: 288 trials per subject (4-class motor imagery: left hand,
-  right hand, feet, tongue)
-- **Format**: MATLAB `.mat` (loaded with `scipy.io.loadmat`)
-
-Manual download (Kaggle account required), then place all `*T.mat` files
-into `archive (1)/` at the repo root:
-
-```text
-LSTM-ODE-BCI/
-└── archive (1)/
-    ├── A01T.mat
-    ├── A02T.mat
-    └── ... A09T.mat
+```bash
+bash download_bci_iv.sh    # A01T-A09T.mat into "archive (1)/", B01T-B09E.mat into bciiv2b/
 ```
-
-> The `archive (1)/` directory is `.gitignored`; the dataset is not
-> redistributed with this repository.
 
 ## Installation
 
-### Requirements
-
-- Python 3.10+
-- PyTorch 2.0+
-- CUDA 11.8+ (for GPU acceleration)
-
-### Setup
-
 ```bash
-# Clone repository
 git clone https://github.com/khurrameycon/LSTM-ODE-BCI.git
 cd LSTM-ODE-BCI
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or
-venv\Scripts\activate  # Windows
-
-# Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Dependencies
+The experiments were run with Python 3 and PyTorch on an NVIDIA GeForce RTX 2080 SUPER GPU (8 GB).
+`requirements.txt` lists the minimum package versions.
 
-```
-torch>=2.0.0
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-learn>=1.3.0
-scipy>=1.11.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-mne>=1.5.0
-shap>=0.42.0
-tqdm>=4.65.0
-xgboost>=2.0.0
-```
+## Reproducing the paper
 
-## Project Structure
-
-```
-LSTM-ODE-BCI/
-├── 01_data_exploration.py      # Dataset exploration and statistics
-├── 02_preprocessing.py         # EEG preprocessing pipeline
-├── 03_baseline_models.py       # SVM, Random Forest, XGBoost baselines
-├── 04_lstm_model.py            # Enhanced LSTM with attention
-├── 05_ode_model.py             # Three-state cognitive ODE model
-├── 06_lstm_ode_integration.py  # Unified LSTM-ODE framework
-├── 07_explainability.py        # Gradient, permutation, SHAP analysis
-├── 08_forecasting.py           # State trajectory forecasting
-├── 09_sensitivity_analysis.py  # Ablation studies
-├── 10_three_state_probabilities.py   # Per-participant 3-state probabilities
-├── 11_deep_baselines.py              # EEGNet + DeepConvNet on ds004148 (binary)
-├── 02b_preprocessing_bciiv2a.py      # BCI-IV-2a preprocessing (.mat → npz)
-├── 12_deep_baselines_bciiv2a.py      # EEGNet + DeepConvNet on BCI-IV-2a (4-class MI)
-├── regenerate_deep_baseline_plots.py # Re-emit fig26-33 from saved JSON (headless)
-├── download_dataset.py               # ds004148 download utility
-├── archive (1)/                      # BCI-IV-2a .mat files (A01T-A09T, manually downloaded)
-├── requirements.txt                  # Python dependencies
-└── README.md                         # This file
-```
-
-## Usage
-
-### 1. Data Exploration
+Run the ds004148 pipeline from the repository root:
 
 ```bash
-python 01_data_exploration.py
+bash run_experiments.sh
 ```
 
-Generates dataset statistics, channel distributions, and temporal patterns.
+| Script | Produces | Paper |
+|---|---|---|
+| `01_data_exploration.py` | class distribution | Fig. 4 |
+| `02_preprocessing.py` | filtering, segment-wise artifact rejection, windows, subject-level split | Section 4.1, Supplementary Table S1 |
+| `03_baseline_models.py` | SVM, Random Forest, XGBoost | Table 1 |
+| `04_lstm_model.py` | LSTM-Attention training and evaluation | Table 1, Fig. 6 |
+| `05_ode_model.py` | ODE fit (five seeds), identifiability profile, equilibrium | Table 8, Fig. 10, Supplementary Note 2 |
+| `06_lstm_ode_integration.py` | coupling-strength sweep | Section 4.4, Fig. 8a |
+| `07_explainability.py` | attention, gradient, permutation and KernelSHAP importance | Fig. 7, Fig. 9c, Supplementary Fig. S3 |
+| `08_forecasting.py` | ODE forecast and persistence baseline | Table 6, Fig. 8c |
+| `09_sensitivity_analysis.py` | ablation and hyperparameter sweep | Tables 3 and 4 |
+| `11_deep_baselines.py` | EEGNet, DeepConvNet, CNN-LSTM, EEG-Transformer | Table 1, Supplementary Figs. S1 and S2 |
+| `13_temporal_baselines.py` | moving average, majority vote, HMM, one-step ODE | Table 5, Fig. 8b |
+| `15_ocular_spectral.py` | channel zeroing and occipital spectra | Table 7, Fig. 9a,b |
+| `16_revision_figures.py` | figures drawn from the saved results | Figs. 5, 8, 9 and 10 |
+| `17_paired_statistics.py` | paired permutation tests and paired CIs | Table 2 |
+| `outputs/results/subject_tests_vs_lstm.json` | per-subject accuracy of every model, sign tests and d_z against LSTM-Attention | Table 2, Fig. 5, Supplementary Table S2 |
+| `18_proposition_checks.py` | numerical checks of Propositions 1 and 2 | Supplementary Note 3 |
+| `02b_preprocessing_bciiv2a.py`, `12c_within_subject_mi.py` | BCI-IV 2a, within subject | Supplementary Table S3 |
+| `12d_bciiv2b.py` | BCI-IV 2b, within subject and session transfer | Supplementary Table S4 |
 
-### 2. Preprocessing
+Other files: `revision_common.py` and `sequence_mmap.py` (shared helpers), `export_mmap_sequences.py` (memory-mapped
+sequences for machines with little RAM), `10_three_state_probabilities.py` (per-participant three-state
+probabilities), `12_deep_baselines_bciiv2a.py` and `regenerate_deep_baseline_plots.py` (subject-independent
+BCI-IV 2a baselines from the previous version; not reported in the current manuscript).
 
-```bash
-python 02_preprocessing.py
-```
+## Results on ds004148 (eight held-out test subjects, 41,331 windows)
 
-Applies bandpass filtering (1-45 Hz), z-score normalization, and sequence creation.
+| Model | Accuracy | Subject mean [95% CI] | Precision | Recall | F1 | AUC |
+|---|---|---|---|---|---|---|
+| SVM | 0.885 | 0.887 [0.864, 0.911] | 0.849 | 0.933 | 0.889 | 0.960 |
+| Random Forest | 0.889 | 0.881 [0.842, 0.918] | 0.869 | 0.913 | 0.890 | 0.954 |
+| XGBoost | 0.902 | 0.903 [0.873, 0.928] | 0.876 | 0.934 | 0.904 | 0.967 |
+| EEGNet | 0.912 | 0.910 [0.856, 0.957] | 0.943 | 0.876 | 0.908 | 0.970 |
+| DeepConvNet | 0.904 | 0.912 [0.838, 0.963] | 0.956 | 0.845 | 0.897 | 0.960 |
+| CNN-LSTM | 0.922 | 0.922 [0.890, 0.951] | 0.931 | 0.910 | 0.920 | 0.979 |
+| EEG-Transformer | 0.911 | 0.910 [0.865, 0.949] | 0.954 | 0.862 | 0.906 | 0.971 |
+| LSTM-Attention | 0.888 | 0.895 [0.835, 0.950] | 0.977 | 0.792 | 0.875 | 0.970 |
+| LSTM-ODE (alpha = 0–1) | 0.888 | 0.895 [0.835, 0.950] | 0.977 | 0.792 | 0.875 | 0.970 |
 
-### 3. Baseline Models
-
-```bash
-python 03_baseline_models.py
-```
-
-Trains and evaluates SVM, Random Forest, and XGBoost classifiers.
-
-### 4. LSTM Training
-
-```bash
-python 04_lstm_model.py
-```
-
-Trains the enhanced LSTM with attention mechanism.
-
-### 5. ODE Model Fitting
-
-```bash
-python 05_ode_model.py
-```
-
-Fits the three-state cognitive ODE parameters.
-
-### 6. LSTM-ODE Integration
-
-```bash
-python 06_lstm_ode_integration.py
-```
-
-Combines LSTM and ODE with probabilistic coupling.
-
-### 7. Explainability Analysis
-
-```bash
-python 07_explainability.py
-# Or skip SHAP (faster):
-python 07_explainability.py --skip-shap
-```
-
-Computes channel importance using multiple methods.
-
-### 8. Deep Learning Baselines — ds004148 (EEGNet, DeepConvNet)
-
-```bash
-python 11_deep_baselines.py
-```
-
-Trains EEGNet (Lawhern et al., 2018) and DeepConvNet (Schirrmeister et al., 2017)
-on the same preprocessed sequences used by the LSTM, then writes confusion
-matrices, ROC curves, training histories, and a comparison bar chart
-(`fig26`–`fig29`). If matplotlib's interactive backend fails on a headless
-machine, regenerate the figures from the saved JSON with:
-
-```bash
-python regenerate_deep_baseline_plots.py ds004148
-```
-
-### 9. Second Dataset — BCI Competition IV, Dataset 2a (4-class Motor Imagery)
-
-Drop the manually downloaded `.mat` files (`A01T.mat` … `A09T.mat`) into
-`archive (1)/`, then:
-
-```bash
-python 02b_preprocessing_bciiv2a.py    # produces bciiv2a_sequences.npz
-python 12_deep_baselines_bciiv2a.py    # trains EEGNet + DeepConvNet (4-class)
-# Headless fallback:
-python regenerate_deep_baseline_plots.py bciiv2a
-```
-
-Outputs `fig30`–`fig33` (training history, confusion matrices, per-class
-one-vs-rest ROC curves, comparison bar chart with the 25% chance line).
-
-## Results
-
-### Dataset 1 — ds004148 (Binary: Eyes Open vs Closed)
-
-| Model | Accuracy | F1-Score | AUC |
-|-------|----------|----------|-----|
-| SVM | 38.0% | 0.000 | 0.467 |
-| Random Forest | 60.3% | 0.563 | 0.657 |
-| XGBoost | 62.0% | 0.632 | 0.689 |
-| LSTM-Attention | 54.9% | 0.603 | 0.596 |
-| LSTM-ODE | 54.9% | 0.599 | 0.596 |
-| **EEGNet** | **83.3%** | **0.846** | **0.900** |
-| **DeepConvNet** | **83.8%** | **0.840** | **0.896** |
-
-EEGNet and DeepConvNet were trained on the *same* train/val/test split as
-the LSTM (subject-wise, 21/4/5 subjects, 256-sample windows, 50 epochs,
-class-weighted cross-entropy, Adam + cosine schedule).
+Positive class: eyes closed. Confidence intervals are bootstrap intervals over test subjects.
 
 <p align="center">
-  <img src="docs/figures/fig27_deep_baselines_confusion_matrices.png" alt="ds004148 confusion matrices" width="85%"/>
-  <br/>
-  <em>Confusion matrices — EEGNet vs DeepConvNet on the ds004148 test set.</em>
+  <img src="docs/figures/fig27_deep_baselines_confusion_matrices.png" alt="Confusion matrices of the deep baselines" width="85%"/>
 </p>
-
 <p align="center">
-  <img src="docs/figures/fig28_deep_baselines_roc_curves.png" alt="ds004148 ROC curves" width="55%"/>
-  <br/>
-  <em>ROC curves — both models reach AUC ≈ 0.90.</em>
+  <img src="docs/figures/fig28_deep_baselines_roc_curves.png" alt="ROC curves of the deep baselines" width="55%"/>
 </p>
-
-<p align="center">
-  <img src="docs/figures/fig26_deep_baselines_training_history.png" alt="ds004148 training history" width="95%"/>
-  <br/>
-  <em>Training history (loss · accuracy · validation F1) for each model.</em>
-</p>
-
-<p align="center">
-  <img src="docs/figures/fig29_deep_baselines_comparison.png" alt="ds004148 deep baselines comparison" width="70%"/>
-</p>
-
-### Dataset 2 — BCI-IV-2a (4-class Motor Imagery, subject-independent)
-
-Train: A01–A06 (1,556 trials)  ·  Val: A07 (271)  ·  Test: A08–A09 (501).
-Chance accuracy = 25%.
-
-| Model | Accuracy | Macro F1 | Macro AUC (OvR) | MCC |
-|-------|----------|----------|------------------|-----|
-| EEGNet | 54.1% | 0.532 | 0.827 | 0.393 |
-| DeepConvNet | 53.3% | 0.525 | 0.792 | 0.379 |
-
-Per-class AUC shows *Feet* as the hardest class (EEGNet 0.72, DeepConvNet
-0.59) — consistent with the published BCI-IV-2a literature.
-
-<p align="center">
-  <img src="docs/figures/fig31_bciiv2a_confusion_matrices.png" alt="BCI-IV-2a confusion matrices" width="95%"/>
-  <br/>
-  <em>4×4 confusion matrices (normalized by true class) on the BCI-IV-2a test set (A08 + A09).</em>
-</p>
-
-<p align="center">
-  <img src="docs/figures/fig32_bciiv2a_roc_curves.png" alt="BCI-IV-2a one-vs-rest ROC" width="95%"/>
-  <br/>
-  <em>One-vs-rest ROC curves per motor-imagery class.</em>
-</p>
-
-<p align="center">
-  <img src="docs/figures/fig30_bciiv2a_training_history.png" alt="BCI-IV-2a training history" width="95%"/>
-  <br/>
-  <em>Training dynamics on BCI-IV-2a — note the chance line (25 %) on the accuracy panel.</em>
-</p>
-
-<p align="center">
-  <img src="docs/figures/fig33_bciiv2a_comparison.png" alt="BCI-IV-2a comparison" width="70%"/>
-</p>
-
-### Learned ODE Parameters
-
-| Transition | Rate | Time Constant | Interpretation |
-|------------|------|---------------|----------------|
-| Passive → Fatigued | 0.626 | 1.6s | Rapid fatigue onset |
-| Fatigued → Active | 0.139 | 7.2s | Slower recovery |
-| Active → Fatigued | 0.095 | 10.6s | Gradual fatigue |
-| Active → Passive | 0.020 | 50.4s | Slow disengagement |
 
 ## Citation
 
-If you use this code in your research, please cite:
+If you use this code, please cite the paper (citation details will be added on publication) and this archive:
 
-```bibtex
-@article{umair2024lstmode,
-  title={Deep Learning and Dynamical Modeling Framework for EEG-Based
-         Cognitive State Evolution in Brain-Computer Interfaces},
-  author={Umair, Muhammad Khurram and Arif, Ayesha and Abrar, Muhammad Faisal},
-  journal={Journal of Healthcare Informatics Research},
-  year={2024},
-  publisher={Springer}
-}
-```
+> Umair, M. K., Arif, A., Abrar, M. F., Ali, S., Lee, I. E., & Jan, S. *LSTM-ODE-BCI* (code), Zenodo.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- OpenNeuro for hosting the ds004148 dataset
-- University of Engineering and Technology, Peshawar
-- National University of Sciences and Technology (NUST), Islamabad
-- University of Hail, Saudi Arabia
+MIT License; see [LICENSE](LICENSE).
 
 ## Contact
 
-- **Muhammad Khurram Umair** - khurram.umair@uetpeshawar.edu.pk
-- **Ayesha Arif** - ayesha.arif@nust.edu.pk
-- **Muhammad Faisal Abrar** - mfabrar@uoh.edu.sa
+Muhammad Khurram Umair (corresponding author): umair19@hotmail.com

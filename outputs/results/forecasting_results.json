@@ -1,0 +1,92 @@
+{
+  "target": {
+    "probability": "LSTM P(eyes closed) at a future window inside the same recording",
+    "label": "eye-state label of that future window (0 open, 1 closed)",
+    "step_seconds": 0.256,
+    "horizons_seconds": [
+      2.5,
+      5.0,
+      10.0
+    ]
+  },
+  "pair_counts": {
+    "scored_pairs": 121461,
+    "excluded_cross_recording_pairs": 2415
+  },
+  "horizons": [
+    10,
+    20,
+    39
+  ],
+  "metrics": {
+    "10": {
+      "horizon_windows": 10,
+      "horizon_seconds": 2.5,
+      "step_seconds": 0.256,
+      "ode": {
+        "accuracy_vs_eye_state_label": 0.8877436373406282,
+        "mae_vs_future_probability": 0.0748776385753004,
+        "spearman_vs_future_probability": 0.871535150697488,
+        "n_samples": 40942
+      },
+      "persistence": {
+        "accuracy_vs_eye_state_label": 1.0,
+        "mae_vs_future_probability": 0.07206450319584554,
+        "spearman_vs_future_probability": 0.8787523019612193,
+        "n_samples": 40942
+      },
+      "ode_minus_persistence_accuracy": -0.11225636265937178
+    },
+    "20": {
+      "horizon_windows": 20,
+      "horizon_seconds": 5.0,
+      "step_seconds": 0.256,
+      "ode": {
+        "accuracy_vs_eye_state_label": 0.8883770201024832,
+        "mae_vs_future_probability": 0.07916887737962759,
+        "spearman_vs_future_probability": 0.8646101739152178,
+        "n_samples": 40592
+      },
+      "persistence": {
+        "accuracy_vs_eye_state_label": 1.0,
+        "mae_vs_future_probability": 0.07339774016816096,
+        "spearman_vs_future_probability": 0.8718067794035181,
+        "n_samples": 40592
+      },
+      "ode_minus_persistence_accuracy": -0.1116229798975168
+    },
+    "39": {
+      "horizon_windows": 39,
+      "horizon_seconds": 10.0,
+      "step_seconds": 0.256,
+      "ode": {
+        "accuracy_vs_eye_state_label": 0.8884213689984222,
+        "mae_vs_future_probability": 0.08603278755259637,
+        "spearman_vs_future_probability": 0.8620898839148499,
+        "n_samples": 39927
+      },
+      "persistence": {
+        "accuracy_vs_eye_state_label": 1.0,
+        "mae_vs_future_probability": 0.07463409111154798,
+        "spearman_vs_future_probability": 0.8687338051460685,
+        "n_samples": 39927
+      },
+      "ode_minus_persistence_accuracy": -0.11157863100157783
+    }
+  },
+  "rolling_metrics": {
+    "mean_accuracy": 0.9235151515151515,
+    "std_accuracy": 0.12842495287191266,
+    "mean_mae": 0.08850829592626458,
+    "std_mae": 0.12161543566001255
+  },
+  "ode_params": {
+    "k_ap": 0.001,
+    "k_af": 0.001,
+    "k_pa": 0.2888951323444814,
+    "k_pf": 0.2898493496305848,
+    "k_fa": 0.001,
+    "k_fp": 0.001
+  },
+  "baseline": "persistence of the current probability and the current label"
+}

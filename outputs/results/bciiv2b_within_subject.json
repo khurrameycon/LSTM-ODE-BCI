@@ -1,0 +1,147 @@
+{
+  "dataset": "BCI Competition IV Dataset 2b",
+  "classes": [
+    "left_hand",
+    "right_hand"
+  ],
+  "chance": 0.5,
+  "channels": "C3, Cz, C4",
+  "window": "4.0 s starting at the cue (3.0 s after trial onset)",
+  "bandpass_hz": [
+    4.0,
+    40.0
+  ],
+  "artifacts": "trials flagged in the file were dropped",
+  "ode_applied": false,
+  "reason": "Active, Passive, and Fatigued have no correspondence to left hand and right hand.",
+  "within_subject": {
+    "protocol": "5-fold within-subject EEGNet, sessions T and E pooled",
+    "subjects": [
+      {
+        "mean_accuracy": 0.8024406224406224,
+        "mean_macro_f1": 0.801386311736994,
+        "n_trials": 552,
+        "subject": "B01"
+      },
+      {
+        "mean_accuracy": 0.5888329519450801,
+        "mean_macro_f1": 0.5864585207927597,
+        "n_trials": 574,
+        "subject": "B02"
+      },
+      {
+        "mean_accuracy": 0.6084276729559749,
+        "mean_macro_f1": 0.6054273387902904,
+        "n_trials": 526,
+        "subject": "B03"
+      },
+      {
+        "mean_accuracy": 0.9645889521526321,
+        "mean_macro_f1": 0.964576037642979,
+        "n_trials": 706,
+        "subject": "B04"
+      },
+      {
+        "mean_accuracy": 0.8946564885496183,
+        "mean_macro_f1": 0.894535578510163,
+        "n_trials": 655,
+        "subject": "B05"
+      },
+      {
+        "mean_accuracy": 0.8552960800667222,
+        "mean_macro_f1": 0.8547950068735402,
+        "n_trials": 546,
+        "subject": "B06"
+      },
+      {
+        "mean_accuracy": 0.8196870925684486,
+        "mean_macro_f1": 0.8193145434209995,
+        "n_trials": 588,
+        "subject": "B07"
+      },
+      {
+        "mean_accuracy": 0.8315154440154441,
+        "mean_macro_f1": 0.8294229973303582,
+        "n_trials": 558,
+        "subject": "B08"
+      },
+      {
+        "mean_accuracy": 0.8204013906447534,
+        "mean_macro_f1": 0.8194595464054142,
+        "n_trials": 562,
+        "subject": "B09"
+      }
+    ],
+    "mean_accuracy": 0.7984274105932552,
+    "mean_macro_f1": 0.797263986833722
+  },
+  "session_transfer": {
+    "protocol": "train on session file T, test on session file E",
+    "subjects": [
+      {
+        "accuracy": 0.5877192982456141,
+        "macro_f1": 0.5474662162162163,
+        "subject": "B01",
+        "n_train": 324,
+        "n_test": 228
+      },
+      {
+        "accuracy": 0.5673469387755102,
+        "macro_f1": 0.5667623114907246,
+        "subject": "B02",
+        "n_train": 329,
+        "n_test": 245
+      },
+      {
+        "accuracy": 0.5869565217391305,
+        "macro_f1": 0.584687612856627,
+        "subject": "B03",
+        "n_train": 296,
+        "n_test": 230
+      },
+      {
+        "accuracy": 0.9804560260586319,
+        "macro_f1": 0.9804541595925297,
+        "subject": "B04",
+        "n_train": 399,
+        "n_test": 307
+      },
+      {
+        "accuracy": 0.8534798534798534,
+        "macro_f1": 0.8513071895424837,
+        "subject": "B05",
+        "n_train": 382,
+        "n_test": 273
+      },
+      {
+        "accuracy": 0.8406374501992032,
+        "macro_f1": 0.8378343455226773,
+        "subject": "B06",
+        "n_train": 295,
+        "n_test": 251
+      },
+      {
+        "accuracy": 0.8491379310344828,
+        "macro_f1": 0.8481192600490058,
+        "subject": "B07",
+        "n_train": 356,
+        "n_test": 232
+      },
+      {
+        "accuracy": 0.9347826086956522,
+        "macro_f1": 0.9346330927073268,
+        "subject": "B08",
+        "n_train": 328,
+        "n_test": 230
+      },
+      {
+        "accuracy": 0.8979591836734694,
+        "macro_f1": 0.8977889027951607,
+        "subject": "B09",
+        "n_train": 317,
+        "n_test": 245
+      }
+    ],
+    "mean_accuracy": 0.7887195346557275
+  }
+}

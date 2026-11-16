@@ -51,7 +51,7 @@ if torch.cuda.is_available():
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {DEVICE}")
 
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 PROCESSED_DATA_PATH = BASE_PATH / 'outputs' / 'processed_data'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 MODELS_PATH = OUTPUT_PATH / 'models'

@@ -34,6 +34,8 @@ import seaborn as sns
 from tqdm import tqdm
 import warnings
 
+from revision_common import initial_state_from_probs
+
 warnings.filterwarnings('ignore')
 
 # Set seeds
@@ -44,7 +46,7 @@ torch.manual_seed(42)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -190,9 +192,10 @@ def load_resources():
     data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
     X_test = data['X_test']
     y_test = data['y_test']
+    recording_ids = data['recording_id_test'] if 'recording_id_test' in data.files else None
     print(f"Loaded test data: {X_test.shape}")
 
-    return lstm_model, ode_params, X_test, y_test
+    return lstm_model, ode_params, X_test, y_test, recording_ids
 
 
 def get_lstm_probabilities(lstm_model, X_data, batch_size=256):
@@ -212,26 +215,15 @@ def get_lstm_probabilities(lstm_model, X_data, batch_size=256):
     return np.vstack(all_probs)
 
 
-def prob_to_ode_state(prob_closed):
-    """Convert LSTM probability to ODE initial state.
+def prob_to_ode_state(prob_closed, prob_open=None):
+    """Initial state used by every other script.
 
-    Maps P(closed eyes) to cognitive state distribution:
-    - High P(closed) -> Higher Fatigued/Passive states
-    - Low P(closed) -> Higher Active state
+    The forecast target is defined in `multistep_forecast`: future
+    P(eyes closed), and the eye-state label of that same future window.
     """
-    # Active state is inversely related to closed eyes probability
-    A = 1.0 - prob_closed
-    # Fatigued/Passive split based on threshold
-    if prob_closed > 0.5:
-        F = prob_closed * 0.6
-        P = prob_closed * 0.4
-    else:
-        F = prob_closed * 0.3
-        P = prob_closed * 0.3
-
-    # Normalize to sum to 1
-    total = A + P + F
-    return np.array([A/total, P/total, F/total])
+    if prob_open is None:
+        prob_open = 1.0 - prob_closed
+    return initial_state_from_probs(prob_open, prob_closed)
 
 
 def create_sequences_for_forecasting(probs, y_labels, window_size=10):
@@ -249,97 +241,128 @@ def create_sequences_for_forecasting(probs, y_labels, window_size=10):
     return np.array(sequences), np.array(labels), np.array(future_labels)
 
 
-def multistep_forecast(probs, ode_params, horizons=[5, 10, 20]):
-    """Perform multi-step ahead forecasting using ODE dynamics."""
+# One window step is sequence_length * (1 - overlap) / sampling_rate.
+# The preprocessing metadata records the exact value; 0.256 s is the default
+# 256-sample, 50% overlap, 500 Hz window.
+DEFAULT_STEP_SECONDS = 0.256
+FORECAST_HORIZONS_S = (2.5, 5.0, 10.0)
+
+
+def _step_seconds():
+    meta_path = PROCESSED_DATA_PATH / 'preprocessing_metadata.json'
+    if meta_path.exists():
+        with open(meta_path) as handle:
+            return float(json.load(handle).get('step_seconds', DEFAULT_STEP_SECONDS))
+    return DEFAULT_STEP_SECONDS
+
+
+def _horizon_steps(step_seconds):
+    return [max(1, int(round(seconds / step_seconds))) for seconds in FORECAST_HORIZONS_S]
+
+
+def multistep_forecast(probs, y_labels, ode_params, horizons, recording_ids=None,
+                       step_seconds=DEFAULT_STEP_SECONDS):
+    """Forecast future P(eyes closed) and the future eye-state label.
+
+    Target, for a horizon of h windows that stay inside one recording:
+      - probability target: LSTM P(eyes closed) at the future window
+      - label target: the eye-state label of that window (0 open, 1 closed)
+    Pairs that cross a recording boundary are excluded. The persistence
+    baseline carries the current probability and the current label forward.
+    """
     print("\n" + "=" * 60)
     print("Multi-Step Trajectory Forecasting")
     print("=" * 60)
+    print("Target: future P(eyes closed) and the eye-state label of that window")
+    print(f"Horizons (windows): {horizons}")
 
-    results = {h: {'predictions': [], 'actuals': []} for h in horizons}
+    results = {
+        h: {
+            'predictions': [], 'actual_probs': [], 'actual_labels': [],
+            'persistence_probs': [], 'persistence_labels': [], 'current_labels': [],
+        }
+        for h in horizons
+    }
     max_horizon = max(horizons)
-
-    print(f"Forecasting horizons: {horizons}")
-    print(f"Total samples: {len(probs) - max_horizon}")
+    n_excluded = 0
+    n_scored = 0
 
     for i in tqdm(range(len(probs) - max_horizon), desc="Forecasting"):
-        # Get initial state from current probability
-        prob_closed = probs[i, 1]
-        initial_state = prob_to_ode_state(prob_closed)
-
-        # Predict trajectory
-        trajectory = predict_trajectory(initial_state, ode_params, max_horizon)
-
-        # Extract predictions at each horizon
+        initial_state = prob_to_ode_state(probs[i, 1], probs[i, 0])
+        trajectory = predict_trajectory(
+            initial_state, ode_params, max_horizon, dt=step_seconds
+        )
         for h in horizons:
-            # Convert trajectory back to probability
-            # Active state corresponds to open eyes, Fatigued to closed
-            predicted_closed_prob = trajectory[h, 2] + trajectory[h, 1] * 0.5  # F + 0.5*P
+            if recording_ids is not None and recording_ids[i] != recording_ids[i + h]:
+                n_excluded += 1
+                continue
+            n_scored += 1
+            # Fatigued carries the closed observation; Passive is not a class label.
+            predicted_closed = float(np.clip(trajectory[h, 2], 0.0, 1.0))
+            bucket = results[h]
+            bucket['predictions'].append(predicted_closed)
+            bucket['actual_probs'].append(float(probs[i + h, 1]))
+            bucket['actual_labels'].append(int(y_labels[i + h]))
+            bucket['persistence_probs'].append(float(probs[i, 1]))
+            bucket['persistence_labels'].append(int(y_labels[i]))
+            bucket['current_labels'].append(int(y_labels[i]))
 
-            # Clip to valid probability range
-            predicted_closed_prob = np.clip(predicted_closed_prob, 0, 1)
-
-            results[h]['predictions'].append(predicted_closed_prob)
-            results[h]['actuals'].append(probs[i + h, 1])
-
-    # Convert to arrays
     for h in horizons:
-        results[h]['predictions'] = np.array(results[h]['predictions'])
-        results[h]['actuals'] = np.array(results[h]['actuals'])
-
+        for key, value in results[h].items():
+            results[h][key] = np.asarray(value)
+    results['_counts'] = {'scored_pairs': n_scored, 'excluded_cross_recording_pairs': n_excluded}
+    print(f"Scored pairs: {n_scored}; excluded because they cross a recording: {n_excluded}")
     return results
 
 
-def evaluate_forecasts(forecast_results, y_test, horizons):
-    """Evaluate forecasting performance at each horizon."""
+def _score_block(pred_probs, actual_probs, pred_labels, actual_labels):
+    pred_labels = np.asarray(pred_labels).astype(int)
+    actual_labels = np.asarray(actual_labels).astype(int)
+    accuracy = float(np.mean(pred_labels == actual_labels)) if len(actual_labels) else float('nan')
+    mae = float(np.mean(np.abs(pred_probs - actual_probs))) if len(actual_probs) else float('nan')
+    if len(actual_probs) > 2 and np.std(pred_probs) > 0 and np.std(actual_probs) > 0:
+        corr, _ = spearmanr(pred_probs, actual_probs)
+        corr = float(corr)
+    else:
+        corr = float('nan')
+    return {'accuracy_vs_eye_state_label': accuracy, 'mae_vs_future_probability': mae,
+            'spearman_vs_future_probability': corr, 'n_samples': int(len(actual_labels))}
+
+
+def evaluate_forecasts(forecast_results, horizons, step_seconds):
+    """Score the ODE forecast and the persistence baseline on the same pairs."""
     print("\n" + "=" * 60)
-    print("Forecasting Evaluation Metrics")
+    print("Forecasting Evaluation")
     print("=" * 60)
+    print("Accuracy is agreement with the future eye-state label.")
+    print("MAE and Spearman compare probabilities with future P(eyes closed).")
+    print("Persistence repeats the current probability and the current label.")
 
     metrics = {}
-
-    for h in horizons:
-        preds = forecast_results[h]['predictions']
-        actuals = forecast_results[h]['actuals']
-
-        # Classification accuracy (threshold at 0.5)
-        pred_labels = (preds > 0.5).astype(int)
-        actual_labels = (actuals > 0.5).astype(int)
-        accuracy = np.mean(pred_labels == actual_labels)
-
-        # Mean Absolute Error
-        mae = np.mean(np.abs(preds - actuals))
-
-        # Mean Squared Error
-        mse = np.mean((preds - actuals) ** 2)
-        rmse = np.sqrt(mse)
-
-        # Correlation
-        corr, p_value = spearmanr(preds, actuals)
-
-        # Direction accuracy (did we predict increase/decrease correctly)
-        if len(preds) > 1:
-            pred_direction = np.sign(preds[1:] - preds[:-1])
-            actual_direction = np.sign(actuals[1:] - actuals[:-1])
-            direction_acc = np.mean(pred_direction == actual_direction)
-        else:
-            direction_acc = 0.0
-
-        metrics[h] = {
-            'accuracy': float(accuracy),
-            'mae': float(mae),
-            'rmse': float(rmse),
-            'correlation': float(corr),
-            'direction_accuracy': float(direction_acc),
-            'n_samples': len(preds)
+    for index, h in enumerate(horizons):
+        block = forecast_results[h]
+        ode = _score_block(
+            block['predictions'], block['actual_probs'],
+            (block['predictions'] >= 0.5).astype(int), block['actual_labels'],
+        )
+        persistence = _score_block(
+            block['persistence_probs'], block['actual_probs'],
+            block['persistence_labels'], block['actual_labels'],
+        )
+        seconds = FORECAST_HORIZONS_S[index]
+        metrics[str(h)] = {
+            'horizon_windows': int(h),
+            'horizon_seconds': float(seconds),
+            'step_seconds': float(step_seconds),
+            'ode': ode,
+            'persistence': persistence,
+            'ode_minus_persistence_accuracy': ode['accuracy_vs_eye_state_label'] - persistence['accuracy_vs_eye_state_label'],
         }
-
-        print(f"\nHorizon {h} steps:")
-        print(f"  Classification Accuracy: {accuracy:.4f}")
-        print(f"  MAE: {mae:.4f}")
-        print(f"  RMSE: {rmse:.4f}")
-        print(f"  Spearman Correlation: {corr:.4f}")
-        print(f"  Direction Accuracy: {direction_acc:.4f}")
-
+        print(f"\n{seconds:.1f}s ({h} windows):")
+        print(f"  ODE accuracy:         {ode['accuracy_vs_eye_state_label']:.4f}")
+        print(f"  Persistence accuracy: {persistence['accuracy_vs_eye_state_label']:.4f}")
+        print(f"  ODE MAE:              {ode['mae_vs_future_probability']:.4f}")
+        print(f"  Persistence MAE:      {persistence['mae_vs_future_probability']:.4f}")
     return metrics
 
 
@@ -406,8 +429,17 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
     x = np.arange(len(horizons))
     width = 0.25
 
+    def metric_value(horizon, name):
+        block = metrics[horizon] if horizon in metrics else metrics[str(horizon)]
+        ode = block['ode']
+        return {
+            'accuracy': ode['accuracy_vs_eye_state_label'],
+            'mae': ode['mae_vs_future_probability'],
+            'correlation': ode['spearman_vs_future_probability'],
+        }[name]
+
     for i, metric in enumerate(metric_names):
-        values = [metrics[h][metric] for h in horizons]
+        values = [metric_value(h, metric) for h in horizons]
         ax1.bar(x + i * width, values, width, label=metric.upper())
 
     ax1.set_xlabel('Forecast Horizon')
@@ -420,7 +452,7 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
 
     # 2. Accuracy vs Horizon trend
     ax2 = fig.add_subplot(2, 3, 2)
-    accuracies = [metrics[h]['accuracy'] for h in horizons]
+    accuracies = [metric_value(h, 'accuracy') for h in horizons]
     ax2.plot(horizons, accuracies, 'bo-', linewidth=2, markersize=10)
     ax2.fill_between(horizons, accuracies, alpha=0.3)
     ax2.set_xlabel('Forecast Horizon (steps)')
@@ -433,7 +465,7 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
     ax3 = fig.add_subplot(2, 3, 3)
     h = horizons[0]
     preds = forecast_results[h]['predictions'][:1000]
-    actuals = forecast_results[h]['actuals'][:1000]
+    actuals = forecast_results[h]['actual_probs'][:1000]
 
     ax3.scatter(actuals, preds, alpha=0.4, s=10, c='steelblue')
     ax3.plot([0, 1], [0, 1], 'r--', linewidth=2, label='Perfect')
@@ -450,7 +482,7 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
 
     h = horizons[1]  # Medium horizon
     preds = forecast_results[h]['predictions'][:n_show]
-    actuals = forecast_results[h]['actuals'][:n_show]
+    actuals = forecast_results[h]['actual_probs'][:n_show]
 
     ax4.plot(t, actuals, 'b-', label='Actual', linewidth=2)
     ax4.plot(t, preds, 'r--', label=f'Predicted (h={h})', linewidth=2, alpha=0.8)
@@ -466,11 +498,13 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
     errors_data = []
     for h in horizons:
         preds = forecast_results[h]['predictions']
-        actuals = forecast_results[h]['actuals']
+        actuals = forecast_results[h]['actual_probs']
         errors = preds - actuals
         errors_data.append(errors)
 
-    bp = ax5.boxplot(errors_data, labels=[f'h={h}' for h in horizons], patch_artist=True)
+    bp = ax5.boxplot(errors_data, patch_artist=True)
+    ax5.set_xticks(range(1, len(horizons) + 1))
+    ax5.set_xticklabels([f'h={h}' for h in horizons])
     colors = plt.cm.viridis(np.linspace(0.3, 0.7, len(horizons)))
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
@@ -488,9 +522,9 @@ def plot_forecasting_results(forecast_results, metrics, horizons, output_path):
         row = []
         for h2 in horizons:
             if h <= h2:
-                row.append(metrics[h]['correlation'])
+                row.append(metric_value(h, 'correlation'))
             else:
-                row.append(metrics[h2]['correlation'])
+                row.append(metric_value(h2, 'correlation'))
         corr_data.append(row)
 
     im = ax6.imshow(corr_data, cmap='YlGnBu', vmin=0, vmax=1)
@@ -538,8 +572,7 @@ def plot_trajectory_examples(probs, ode_params, output_path, n_examples=4):
         trajectory = predict_trajectory(initial_state, ode_params, horizon - 1)
 
         # Convert trajectory to probability
-        pred_probs = trajectory[:, 2] + trajectory[:, 1] * 0.5
-        pred_probs = np.clip(pred_probs, 0, 1)
+        pred_probs = np.clip(trajectory[:, 2], 0, 1)
 
         t = np.arange(len(actual_probs))
 
@@ -577,63 +610,64 @@ def main():
     start_time = time.time()
 
     # 1. Load resources
-    lstm_model, ode_params, X_test, y_test = load_resources()
+    lstm_model, ode_params, X_test, y_test, recording_ids = load_resources()
 
-    # 2. Get LSTM probability predictions
     print("\n" + "=" * 60)
     print("Extracting LSTM Probabilities")
     print("=" * 60)
     probs = get_lstm_probabilities(lstm_model, X_test)
     print(f"Probability shape: {probs.shape}")
 
-    # 3. Multi-step forecasting
-    horizons = [5, 10, 20]
-    forecast_results = multistep_forecast(probs, ode_params, horizons)
+    step_seconds = _step_seconds()
+    horizons = _horizon_steps(step_seconds)
+    forecast_results = multistep_forecast(
+        probs, y_test, ode_params, horizons, recording_ids, step_seconds
+    )
+    counts = forecast_results.pop('_counts')
+    metrics = evaluate_forecasts(forecast_results, horizons, step_seconds)
 
-    # 4. Evaluate forecasts
-    metrics = evaluate_forecasts(forecast_results, y_test, horizons)
-
-    # 5. Rolling window evaluation
     rolling_metrics = rolling_forecast_evaluation(probs, ode_params)
-
-    # 6. Generate visualizations
     plot_forecasting_results(forecast_results, metrics, horizons, FIGURES_PATH)
     plot_trajectory_examples(probs, ode_params, FIGURES_PATH)
 
-    # 7. Save results
-    results = {
-        'horizons': horizons,
-        'metrics': metrics,
-        'rolling_metrics': {
+    rolling_summary = {}
+    if len(rolling_metrics):
+        rolling_summary = {
             'mean_accuracy': float(rolling_metrics['accuracy'].mean()),
             'std_accuracy': float(rolling_metrics['accuracy'].std()),
             'mean_mae': float(rolling_metrics['mae'].mean()),
-            'std_mae': float(rolling_metrics['mae'].std())
+            'std_mae': float(rolling_metrics['mae'].std()),
+        }
+
+    results = {
+        'target': {
+            'probability': 'LSTM P(eyes closed) at a future window inside the same recording',
+            'label': 'eye-state label of that future window (0 open, 1 closed)',
+            'step_seconds': step_seconds,
+            'horizons_seconds': list(FORECAST_HORIZONS_S),
         },
-        'ode_params': ode_params
+        'pair_counts': counts,
+        'horizons': horizons,
+        'metrics': metrics,
+        'rolling_metrics': rolling_summary,
+        'ode_params': ode_params,
+        'baseline': 'persistence of the current probability and the current label',
     }
 
     with open(RESULTS_PATH / 'forecasting_results.json', 'w') as f:
         json.dump(results, f, indent=2)
 
     print("\nSaved: forecasting_results.json")
-
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
     print("FORECASTING ANALYSIS COMPLETE!")
     print("=" * 60)
     print(f"Total time: {elapsed:.1f}s")
-
-    # Print summary
-    print("\n" + "=" * 60)
-    print("FORECASTING SUMMARY")
-    print("=" * 60)
     for h in horizons:
-        print(f"\nHorizon {h} steps:")
-        print(f"  Accuracy: {metrics[h]['accuracy']:.4f}")
-        print(f"  RMSE: {metrics[h]['rmse']:.4f}")
-        print(f"  Correlation: {metrics[h]['correlation']:.4f}")
-
+        block = metrics[str(h)] if str(h) in metrics else metrics[h]
+        print(f"\n{block['horizon_seconds']:.1f}s:")
+        print(f"  ODE accuracy:         {block['ode']['accuracy_vs_eye_state_label']:.4f}")
+        print(f"  Persistence accuracy: {block['persistence']['accuracy_vs_eye_state_label']:.4f}")
     return results
 
 

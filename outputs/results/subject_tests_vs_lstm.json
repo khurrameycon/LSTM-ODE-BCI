@@ -1,0 +1,430 @@
+{
+  "reference": "LSTM-Attention",
+  "note": "Subject-level sign test and Cohen's d_z. This replaces a window-level McNemar test because overlapping windows are not independent. d_z is the mean paired subject-accuracy difference (reference minus other) divided by the SD of those differences. LSTM-ODE classification matches LSTM-Attention on this rerun, so these tests are the classification comparison for the LSTM-ODE row as well.",
+  "n_subjects": 8,
+  "subjects": [
+    "sub-08",
+    "sub-15",
+    "sub-19",
+    "sub-21",
+    "sub-29",
+    "sub-39",
+    "sub-43",
+    "sub-52"
+  ],
+  "comparisons": {
+    "LSTM-Attention vs SVM": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": 0.10877010150344248,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.8700322234156821,
+          "difference": -0.09667024704618687
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.8438438438438438,
+          "difference": -0.049192049192049114
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.8645566010835471,
+          "difference": 0.11904761904761907
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9276301577014474,
+          "difference": 0.047094404839058135
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8536796536796537,
+          "difference": 0.01861471861471864
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9506057781919851,
+          "difference": 0.012426219322770993
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.8636559758377679,
+          "difference": -0.060980871566230443
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9247541684480547,
+          "difference": 0.07310816588285596
+        }
+      ]
+    },
+    "LSTM-Attention vs Random Forest": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": 0.1067576826143688,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.907626208378088,
+          "difference": -0.13426423200859283
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.8984698984698984,
+          "difference": -0.10381810381810375
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.7965497576276019,
+          "difference": 0.18705446250356428
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9388636854612227,
+          "difference": 0.03586087707928287
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8545454545454545,
+          "difference": 0.017748917748917847
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9388008698353526,
+          "difference": 0.024231127679403497
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.9243492017834029,
+          "difference": -0.12167409751186542
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.7900812312954254,
+          "difference": 0.20778110303548525
+        }
+      ]
+    },
+    "LSTM-Attention vs XGBoost": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": -0.08432804006720994,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.8964554242749732,
+          "difference": -0.12309344790547794
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.8672958672958673,
+          "difference": -0.07264407264407258
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.8420302252637581,
+          "difference": 0.14157399486740807
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9583063296608338,
+          "difference": 0.0164182328796717
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8606060606060606,
+          "difference": 0.011688311688311748
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9459459459459459,
+          "difference": 0.017086051568810157
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.9267941895584639,
+          "difference": -0.1241190852869265
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9277469003847798,
+          "difference": 0.07011543394613085
+        }
+      ]
+    },
+    "LSTM-Attention vs EEGNet": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": -0.2672297258710923,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.7916219119226638,
+          "difference": -0.018259935553168627
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.9385099385099385,
+          "difference": -0.14385814385814377
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.9733390362132877,
+          "difference": 0.010265183917878562
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9682436811406351,
+          "difference": 0.006480881399870464
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8311688311688312,
+          "difference": 0.04112554112554112
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9563529046287667,
+          "difference": 0.006679092885989446
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.8272688048324465,
+          "difference": -0.024593700560909038
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9948696023941855,
+          "difference": 0.0029927319367251126
+        }
+      ]
+    },
+    "LSTM-Attention vs DeepConvNet": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": -0.17667245811953086,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.9617615467239528,
+          "difference": -0.18839957035445754
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.6718146718146718,
+          "difference": 0.12283712283712289
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.9616481323068149,
+          "difference": 0.021956087824351322
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9766688269604666,
+          "difference": -0.0019442644199610948
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.845021645021645,
+          "difference": 0.027272727272727337
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.956663560111836,
+          "difference": 0.006368437402920146
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.9309650510570977,
+          "difference": -0.12828994678556027
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9948696023941855,
+          "difference": 0.0029927319367251126
+        }
+      ]
+    },
+    "LSTM-Attention vs CNN-LSTM": {
+      "p_value": 1.0,
+      "subjects_a_better": 4,
+      "subjects_b_better": 4,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": -0.39057646326086665,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.8940923737916219,
+          "difference": -0.12073039742212666
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.8385528385528386,
+          "difference": -0.04390104390104388
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.9399771884801825,
+          "difference": 0.043627031650983694
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9531216245409375,
+          "difference": 0.021602937999568028
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8623376623376623,
+          "difference": 0.009956709956710053
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9666045355700528,
+          "difference": -0.00357253805529667
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.944340572414785,
+          "difference": -0.14166546814324754
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9794784095767421,
+          "difference": 0.0183839247541685
+        }
+      ]
+    },
+    "LSTM-Attention vs EEG-Transformer": {
+      "p_value": 0.7265625,
+      "subjects_a_better": 5,
+      "subjects_b_better": 3,
+      "ties": 0,
+      "unit": "subject",
+      "cohens_dz": -0.2764685873731345,
+      "cohens_dz_definition": "mean(reference - other subject accuracy) / SD of those differences",
+      "subject_accuracies": [
+        {
+          "subject": "sub-08",
+          "reference_accuracy": 0.7733619763694952,
+          "other_accuracy": 0.8403866809881847,
+          "difference": -0.06702470461868948
+        },
+        {
+          "subject": "sub-15",
+          "reference_accuracy": 0.7946517946517947,
+          "other_accuracy": 0.8886028886028886,
+          "difference": -0.09395109395109391
+        },
+        {
+          "subject": "sub-19",
+          "reference_accuracy": 0.9836042201311662,
+          "other_accuracy": 0.9773310521813516,
+          "difference": 0.006273167949814584
+        },
+        {
+          "subject": "sub-21",
+          "reference_accuracy": 0.9747245625405055,
+          "other_accuracy": 0.9721322099805574,
+          "difference": 0.0025923525599481634
+        },
+        {
+          "subject": "sub-29",
+          "reference_accuracy": 0.8722943722943723,
+          "other_accuracy": 0.8142857142857143,
+          "difference": 0.058008658008658065
+        },
+        {
+          "subject": "sub-39",
+          "reference_accuracy": 0.9630319975147561,
+          "other_accuracy": 0.9370922646784716,
+          "difference": 0.02593973283628448
+        },
+        {
+          "subject": "sub-43",
+          "reference_accuracy": 0.8026751042715374,
+          "other_accuracy": 0.8547389615993096,
+          "difference": -0.05206385732777219
+        },
+        {
+          "subject": "sub-52",
+          "reference_accuracy": 0.9978623343309106,
+          "other_accuracy": 0.9914493373236426,
+          "difference": 0.006412997007268051
+        }
+      ]
+    }
+  }
+}

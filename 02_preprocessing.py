@@ -23,10 +23,11 @@ from scipy.signal import butter, filtfilt
 from pathlib import Path
 import mne
 import json
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import warnings
+
+from revision_common import design_power
 
 warnings.filterwarnings('ignore')
 mne.set_log_level('ERROR')
@@ -35,7 +36,7 @@ mne.set_log_level('ERROR')
 np.random.seed(42)
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 DATASET_PATH = BASE_PATH / 'Dataset' / 'II'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
@@ -52,8 +53,13 @@ LOWCUT = 1.0  # Hz
 HIGHCUT = 45.0  # Hz
 FILTER_ORDER = 4
 
-# Limit subjects for quick testing (set to None for all subjects)
-MAX_SUBJECTS = 30  # Change to None to use all 60 subjects
+# None uses every subject that has been downloaded (the paper uses all 60).
+MAX_SUBJECTS = None
+SPLIT_SEED = 42
+# A sample is rejected when any channel exceeds this amplitude. The
+# surrounding samples are not spliced together; windowing restarts after
+# the gap. See Major Comment 8.
+ARTIFACT_THRESHOLD_UV = 100.0
 
 
 def is_real_data(vhdr_path):
@@ -152,266 +158,310 @@ def normalize_data(data, mean=None, std=None):
     return normalized, mean.flatten(), std.flatten()
 
 
-def create_sequences(data, label, seq_length, overlap):
-    """Create overlapping sequences from continuous EEG.
+def clean_segments(data, threshold_uv=ARTIFACT_THRESHOLD_UV):
+    """Return index ranges that stay inside ±threshold on every channel.
 
-    Args:
-        data: EEG data (n_channels, n_samples)
-        label: Class label (0 or 1)
-        seq_length: Sequence length in samples
-        overlap: Overlap fraction (0-1)
-
-    Returns:
-        X: Sequences (n_sequences, seq_length, n_channels)
-        y: Labels (n_sequences,)
+    A bad sample ends the current segment. The next clean sample starts a
+    new segment. Segments are never concatenated, so a window cannot
+    contain the splice that artifact deletion would create.
     """
-    n_channels, n_samples = data.shape
-    step = int(seq_length * (1 - overlap))
+    threshold_v = threshold_uv * 1e-6
+    bad = np.any(np.abs(data) > threshold_v, axis=0)
+    segments = []
+    start = None
+    for index, is_bad in enumerate(bad):
+        if not is_bad and start is None:
+            start = index
+        elif is_bad and start is not None:
+            segments.append((start, index))
+            start = None
+    if start is not None:
+        segments.append((start, data.shape[1]))
+    return segments, int(bad.sum())
 
+
+def create_sequences_from_segments(data, label, segments, seq_length, overlap):
+    """Window only inside contiguous clean segments of one recording.
+
+    `data` is (n_channels, n_samples). Each recording is a single
+    eyes-open or eyes-closed file, so a window cannot cross a condition
+    boundary. Windows shorter than `seq_length` are dropped rather than
+    padded across a gap.
+    """
+    step = max(1, int(seq_length * (1 - overlap)))
     sequences = []
     labels = []
+    for start, end in segments:
+        for cursor in range(start, end - seq_length + 1, step):
+            sequences.append(data[:, cursor:cursor + seq_length].T)
+            labels.append(label)
+    if not sequences:
+        return (
+            np.empty((0, seq_length, data.shape[0]), dtype=np.float32),
+            np.empty((0,), dtype=np.int64),
+        )
+    return np.asarray(sequences, dtype=np.float32), np.asarray(labels, dtype=np.int64)
 
-    for start in range(0, n_samples - seq_length + 1, step):
-        end = start + seq_length
-        seq = data[:, start:end].T  # (seq_length, n_channels)
-        sequences.append(seq)
-        labels.append(label)
 
-    return np.array(sequences), np.array(labels)
+def load_filtered_recording(vhdr_path):
+    """Load one BrainVision file and bandpass it. Values stay in volts."""
+    raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
+    raw.pick_types(eeg=True, exclude=[])
+    data = bandpass_filter(raw.get_data(), LOWCUT, HIGHCUT, SAMPLING_RATE, FILTER_ORDER)
+    return data, list(raw.ch_names)
 
 
-def load_and_preprocess_recording(vhdr_path, label, normalization_params=None):
-    """Load and preprocess a single EEG recording.
-
-    Args:
-        vhdr_path: Path to .vhdr file
-        label: Class label (0=eyes open, 1=eyes closed)
-        normalization_params: Dict with 'mean' and 'std' for normalization
-
-    Returns:
-        X: Sequences (n_sequences, seq_length, n_channels)
-        y: Labels
-        norm_params: Normalization parameters
-    """
-    try:
-        # Load raw data
-        raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
-        raw.pick_types(eeg=True, exclude=[])
-
-        data = raw.get_data()  # (n_channels, n_samples)
-        ch_names = raw.ch_names
-
-        # Bandpass filter
-        data = bandpass_filter(data, LOWCUT, HIGHCUT, SAMPLING_RATE, FILTER_ORDER)
-
-        # Normalize
-        if normalization_params:
-            mean = np.array(normalization_params['mean']).reshape(-1, 1)
-            std = np.array(normalization_params['std']).reshape(-1, 1)
-            data, _, _ = normalize_data(data, mean, std)
+def training_normalization(train_recs):
+    """Channel mean and variance from clean training samples only."""
+    total = None
+    total_sq = None
+    count = 0
+    channel_names = None
+    used = 0
+    for rec in tqdm(train_recs, desc="Train normalization"):
+        try:
+            data, names = load_filtered_recording(rec['vhdr_path'])
+        except Exception as exc:
+            print(f"Skipping {rec['vhdr_path']}: {exc}")
+            continue
+        if channel_names is None:
+            channel_names = names
+        elif names != channel_names:
+            print(f"Skipping {rec['subject']}: channel montage does not match")
+            continue
+        segments, _ = clean_segments(data)
+        if not segments:
+            continue
+        clean = np.concatenate([data[:, start:end] for start, end in segments], axis=1)
+        if total is None:
+            total = clean.sum(axis=1)
+            total_sq = np.square(clean).sum(axis=1)
         else:
-            data, mean, std = normalize_data(data)
-            normalization_params = {'mean': mean.tolist(), 'std': std.tolist()}
+            total += clean.sum(axis=1)
+            total_sq += np.square(clean).sum(axis=1)
+        count += clean.shape[1]
+        used += 1
+    if count == 0:
+        raise RuntimeError("No clean training samples available for normalization")
+    mean = total / count
+    variance = np.maximum(total_sq / count - np.square(mean), 1e-12)
+    std = np.sqrt(variance)
+    print(f"Normalization from {used} training recordings, {count:,} clean samples")
+    return mean, std, channel_names
 
-        # Create sequences
-        X, y = create_sequences(data, label, SEQUENCE_LENGTH, SEQUENCE_OVERLAP)
 
-        return X, y, ch_names, normalization_params
-
-    except Exception as e:
-        print(f"Error processing {vhdr_path}: {e}")
-        return None, None, None, None
+def window_recording(vhdr_path, label, mean, std, channel_names):
+    """Filter, reject by amplitude, normalize with training stats, window."""
+    data, names = load_filtered_recording(vhdr_path)
+    if names != channel_names:
+        raise ValueError("channel montage does not match the training montage")
+    segments, n_rejected = clean_segments(data)
+    normalized = (data - mean[:, None]) / std[:, None]
+    sequences, labels = create_sequences_from_segments(
+        normalized, label, segments, SEQUENCE_LENGTH, SEQUENCE_OVERLAP
+    )
+    return sequences, labels, n_rejected, int(data.shape[1])
 
 
 def split_subjects(recordings, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
-    """Split recordings by subject for cross-subject validation.
+    """Subject-level split. The same subject never appears in two splits.
 
-    Args:
-        recordings: List of recording dicts
-        train_ratio: Fraction for training
-        val_ratio: Fraction for validation
-        test_ratio: Fraction for testing
-
-    Returns:
-        train_recordings, val_recordings, test_recordings
+    The assignment is the shuffle of the sorted subject list under
+    SPLIT_SEED. There is no chronological or session fallback: those
+    protocols are a different experiment and were being mixed with this one.
     """
-    # Get unique subjects
-    subjects = sorted(list(set([r['subject'] for r in recordings])))
+    subjects = sorted({r['subject'] for r in recordings})
     n_subjects = len(subjects)
-
     print(f"Total subjects with data: {n_subjects}")
-
     if n_subjects < 3:
-        # If only 1 subject, split by session
-        print("Warning: Less than 3 subjects. Splitting by session instead.")
-        sessions = sorted(list(set([r['session'] for r in recordings])))
+        raise RuntimeError(
+            "Need at least 3 subjects for a subject-level train/validation/test "
+            "split. Download more of ds004148; do not fall back to a session "
+            "or chronological split."
+        )
 
-        if len(sessions) >= 3:
-            train_sessions = sessions[:int(len(sessions) * train_ratio)]
-            remaining = sessions[int(len(sessions) * train_ratio):]
-            val_sessions = remaining[:len(remaining) // 2]
-            test_sessions = remaining[len(remaining) // 2:]
-
-            train_recs = [r for r in recordings if r['session'] in train_sessions]
-            val_recs = [r for r in recordings if r['session'] in val_sessions]
-            test_recs = [r for r in recordings if r['session'] in test_sessions]
-        else:
-            # Only one session - split by time
-            train_recs = recordings[:int(len(recordings) * train_ratio)]
-            val_recs = recordings[int(len(recordings) * train_ratio):int(len(recordings) * (train_ratio + val_ratio))]
-            test_recs = recordings[int(len(recordings) * (train_ratio + val_ratio)):]
-
-        return train_recs, val_recs, test_recs
-
-    # Normal case: split by subject
-    np.random.shuffle(subjects)
+    order = np.array(subjects)
+    rng = np.random.RandomState(SPLIT_SEED)
+    rng.shuffle(order)
 
     n_train = max(1, int(n_subjects * train_ratio))
     n_val = max(1, int(n_subjects * val_ratio))
-    n_test = n_subjects - n_train - n_val
+    if n_train + n_val >= n_subjects:
+        n_val = max(1, n_subjects - n_train - 1)
+    train_subjects = order[:n_train].tolist()
+    val_subjects = order[n_train:n_train + n_val].tolist()
+    test_subjects = order[n_train + n_val:].tolist()
 
-    train_subjects = subjects[:n_train]
-    val_subjects = subjects[n_train:n_train + n_val]
-    test_subjects = subjects[n_train + n_val:]
+    print(f"Train subjects ({len(train_subjects)}): {train_subjects}")
+    print(f"Validation subjects ({len(val_subjects)}): {val_subjects}")
+    print(f"Test subjects ({len(test_subjects)}): {test_subjects}")
 
-    print(f"Train subjects: {len(train_subjects)}")
-    print(f"Validation subjects: {len(val_subjects)}")
-    print(f"Test subjects: {len(test_subjects)}")
-
-    train_recs = [r for r in recordings if r['subject'] in train_subjects]
-    val_recs = [r for r in recordings if r['subject'] in val_subjects]
-    test_recs = [r for r in recordings if r['subject'] in test_subjects]
-
-    return train_recs, val_recs, test_recs
+    train_set, val_set, test_set = set(train_subjects), set(val_subjects), set(test_subjects)
+    train_recs = [r for r in recordings if r['subject'] in train_set]
+    val_recs = [r for r in recordings if r['subject'] in val_set]
+    test_recs = [r for r in recordings if r['subject'] in test_set]
+    return train_recs, val_recs, test_recs, train_subjects, val_subjects, test_subjects
 
 
-def process_all_recordings(train_recs, val_recs, test_recs):
-    """Process all recordings and create train/val/test sets.
+def _process_split(recordings, mean, std, channel_names, description):
+    sequences, labels, subjects, recording_ids = [], [], [], []
+    rejected = 0
+    total_samples = 0
+    for rec in tqdm(recordings, desc=description):
+        try:
+            x_rec, y_rec, n_rejected, n_samples = window_recording(
+                rec['vhdr_path'], rec['label'], mean, std, channel_names
+            )
+        except Exception as exc:
+            print(f"Skipping {rec['vhdr_path']}: {exc}")
+            continue
+        rejected += n_rejected
+        total_samples += n_samples
+        if len(x_rec) == 0:
+            continue
+        recording_key = f"{rec['subject']}_{rec['session']}_{rec['task']}"
+        sequences.append(x_rec)
+        labels.append(y_rec)
+        subjects.append(np.full(len(x_rec), rec['subject']))
+        recording_ids.append(np.full(len(x_rec), recording_key))
+    if not sequences:
+        empty_x = np.empty((0, SEQUENCE_LENGTH, len(channel_names)), dtype=np.float32)
+        empty_y = np.empty((0,), dtype=np.int64)
+        empty_s = np.empty((0,), dtype='<U32')
+        return empty_x, empty_y, empty_s, empty_s, rejected, total_samples
+    return (
+        np.concatenate(sequences, axis=0),
+        np.concatenate(labels, axis=0),
+        np.concatenate(subjects, axis=0),
+        np.concatenate(recording_ids, axis=0),
+        rejected,
+        total_samples,
+    )
 
-    Returns:
-        X_train, y_train, X_val, y_val, X_test, y_test, metadata
-    """
+
+def process_all_recordings(train_recs, val_recs, test_recs,
+                           train_subjects, val_subjects, test_subjects):
+    """Process every split with training-set normalization and no splicing."""
+    print("\n" + "=" * 60)
+    print("Estimating training-set normalization")
+    print("=" * 60)
+    mean, std, channel_names = training_normalization(train_recs)
+
     print("\n" + "=" * 60)
     print("Processing Training Data")
     print("=" * 60)
-
-    X_train_list = []
-    y_train_list = []
-    normalization_params = None
-    ch_names = None
-
-    for rec in tqdm(train_recs, desc="Training"):
-        X, y, channels, norm_params = load_and_preprocess_recording(
-            rec['vhdr_path'], rec['label'], normalization_params
-        )
-        if X is not None:
-            X_train_list.append(X)
-            y_train_list.append(y)
-            if normalization_params is None:
-                normalization_params = norm_params
-            if ch_names is None:
-                ch_names = channels
-
-    if not X_train_list:
-        print("No training data processed!")
-        return None, None, None, None, None, None, None
-
-    X_train = np.concatenate(X_train_list, axis=0)
-    y_train = np.concatenate(y_train_list, axis=0)
-
+    X_train, y_train, sub_train, rec_train, rej_train, n_train = _process_split(
+        train_recs, mean, std, channel_names, "Training"
+    )
     print(f"Training sequences: {X_train.shape}")
-    print(f"Training labels: {np.bincount(y_train)}")
 
     print("\n" + "=" * 60)
     print("Processing Validation Data")
     print("=" * 60)
-
-    X_val_list = []
-    y_val_list = []
-
-    for rec in tqdm(val_recs, desc="Validation"):
-        X, y, _, _ = load_and_preprocess_recording(
-            rec['vhdr_path'], rec['label'], normalization_params
-        )
-        if X is not None:
-            X_val_list.append(X)
-            y_val_list.append(y)
-
-    if X_val_list:
-        X_val = np.concatenate(X_val_list, axis=0)
-        y_val = np.concatenate(y_val_list, axis=0)
-        print(f"Validation sequences: {X_val.shape}")
-    else:
-        X_val, y_val = None, None
-        print("No validation data processed!")
+    X_val, y_val, sub_val, rec_val, rej_val, n_val = _process_split(
+        val_recs, mean, std, channel_names, "Validation"
+    )
+    print(f"Validation sequences: {X_val.shape}")
 
     print("\n" + "=" * 60)
     print("Processing Test Data")
     print("=" * 60)
+    X_test, y_test, sub_test, rec_test, rej_test, n_test = _process_split(
+        test_recs, mean, std, channel_names, "Test"
+    )
+    print(f"Test sequences: {X_test.shape}")
 
-    X_test_list = []
-    y_test_list = []
+    if len(X_train) == 0:
+        print("No training data processed!")
+        return None
 
-    for rec in tqdm(test_recs, desc="Test"):
-        X, y, _, _ = load_and_preprocess_recording(
-            rec['vhdr_path'], rec['label'], normalization_params
-        )
-        if X is not None:
-            X_test_list.append(X)
-            y_test_list.append(y)
-
-    if X_test_list:
-        X_test = np.concatenate(X_test_list, axis=0)
-        y_test = np.concatenate(y_test_list, axis=0)
-        print(f"Test sequences: {X_test.shape}")
-    else:
-        X_test, y_test = None, None
-        print("No test data processed!")
-
-    # Metadata
+    step_samples = max(1, int(SEQUENCE_LENGTH * (1 - SEQUENCE_OVERLAP)))
     metadata = {
         'sampling_rate': SAMPLING_RATE,
         'sequence_length': SEQUENCE_LENGTH,
         'overlap': SEQUENCE_OVERLAP,
+        'step_samples': step_samples,
+        'step_seconds': step_samples / SAMPLING_RATE,
         'lowcut_hz': LOWCUT,
         'highcut_hz': HIGHCUT,
         'filter_order': FILTER_ORDER,
-        'n_channels': X_train.shape[2] if X_train is not None else 0,
-        'channel_names': ch_names if ch_names else [],
-        'normalization_params': normalization_params,
-        'train_subjects': list(set([r['subject'] for r in train_recs])),
-        'val_subjects': list(set([r['subject'] for r in val_recs])) if val_recs else [],
-        'test_subjects': list(set([r['subject'] for r in test_recs])) if test_recs else [],
-        'n_train_sequences': len(X_train) if X_train is not None else 0,
-        'n_val_sequences': len(X_val) if X_val is not None else 0,
-        'n_test_sequences': len(X_test) if X_test is not None else 0
+        'n_channels': int(X_train.shape[2]),
+        'channel_names': channel_names,
+        'normalization': 'z-score from clean training samples only',
+        'normalization_params': {'mean': mean.tolist(), 'std': std.tolist()},
+        'split_protocol': 'subject-level',
+        'split_seed': SPLIT_SEED,
+        'train_subjects': train_subjects,
+        'val_subjects': val_subjects,
+        'test_subjects': test_subjects,
+        'n_train_sequences': int(len(X_train)),
+        'n_val_sequences': int(len(X_val)),
+        'n_test_sequences': int(len(X_test)),
+        'artifact_threshold_uv': ARTIFACT_THRESHOLD_UV,
+        'artifact_policy': (
+            'Samples beyond ±100 µV on any channel end the current segment. '
+            'Windowing restarts after the gap. Rejected samples are not deleted '
+            'and concatenated.'
+        ),
+        'rejected_samples': {
+            'train': int(rej_train),
+            'val': int(rej_val),
+            'test': int(rej_test),
+        },
+        'raw_samples': {
+            'train': int(n_train),
+            'val': int(n_val),
+            'test': int(n_test),
+        },
+        'label_policy': (
+            'Each file is one eyes-open or eyes-closed condition. Every window '
+            'inherits that file label. Windows that would span a condition '
+            'boundary are not created. Majority vote is not used.'
+        ),
+        'windows_spanning_condition_boundary': 0,
+        'power_analysis': design_power(len(test_subjects)),
     }
+    groups = {
+        'subject_id_train': sub_train,
+        'subject_id_val': sub_val,
+        'subject_id_test': sub_test,
+        'recording_id_train': rec_train,
+        'recording_id_val': rec_val,
+        'recording_id_test': rec_test,
+    }
+    return X_train, y_train, X_val, y_val, X_test, y_test, metadata, groups
 
-    return X_train, y_train, X_val, y_val, X_test, y_test, metadata
 
-
-def save_processed_data(X_train, y_train, X_val, y_val, X_test, y_test, metadata):
-    """Save processed data to files."""
+def save_processed_data(X_train, y_train, X_val, y_val, X_test, y_test,
+                        metadata, groups, output_name='processed_sequences.npz'):
+    """Save processed arrays, subject ids, and the split list."""
     print("\n" + "=" * 60)
     print("Saving Processed Data")
     print("=" * 60)
 
-    # Save numpy arrays
     np.savez_compressed(
-        PROCESSED_DATA_PATH / 'processed_sequences.npz',
+        PROCESSED_DATA_PATH / output_name,
         X_train=X_train,
         y_train=y_train,
         X_val=X_val if X_val is not None else np.array([]),
         y_val=y_val if y_val is not None else np.array([]),
         X_test=X_test if X_test is not None else np.array([]),
-        y_test=y_test if y_test is not None else np.array([])
+        y_test=y_test if y_test is not None else np.array([]),
+        **groups,
     )
-    print(f"Saved: processed_sequences.npz")
+    print(f"Saved: {output_name}")
 
-    # Save metadata
     with open(PROCESSED_DATA_PATH / 'preprocessing_metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
-    print(f"Saved: preprocessing_metadata.json")
+    with open(PROCESSED_DATA_PATH / 'subject_splits.json', 'w') as f:
+        json.dump({
+            'seed': SPLIT_SEED,
+            'protocol': 'subject-level',
+            'train_subjects': metadata['train_subjects'],
+            'val_subjects': metadata['val_subjects'],
+            'test_subjects': metadata['test_subjects'],
+        }, f, indent=2)
+    print("Saved: preprocessing_metadata.json, subject_splits.json")
 
 
 def plot_preprocessing_overview(X_train, y_train, X_val, y_val, X_test, y_test, metadata):
@@ -552,6 +602,21 @@ def print_summary(X_train, y_train, X_val, y_val, X_test, y_test, metadata):
 
 def main():
     """Main preprocessing function."""
+    import argparse
+    global SEQUENCE_LENGTH, MAX_SUBJECTS
+
+    parser = argparse.ArgumentParser(description='Preprocess ds004148')
+    parser.add_argument('--sequence-length', type=int, default=SEQUENCE_LENGTH,
+                        help='Window length in samples. Use 128, 256, and 512 for the sensitivity run.')
+    parser.add_argument('--output-tag', default='',
+                        help='Suffix for the npz name. Empty keeps processed_sequences.npz.')
+    parser.add_argument('--max-subjects', type=int, default=None,
+                        help='Optional cap. The paper run leaves this unset.')
+    args = parser.parse_args()
+    SEQUENCE_LENGTH = args.sequence_length
+    if args.max_subjects is not None:
+        MAX_SUBJECTS = args.max_subjects
+
     print("\n" + "=" * 60)
     print("EEG DATA PREPROCESSING PIPELINE")
     print("OpenNeuro ds004148")
@@ -559,7 +624,6 @@ def main():
     print("Authors: Ayesha, Muhammad Khurram Umair")
     print("=" * 60)
 
-    # Get downloaded recordings
     print("\nLoading recordings...")
     recordings = get_downloaded_recordings()
     print(f"Found {len(recordings)} recordings with downloaded data")
@@ -569,20 +633,23 @@ def main():
         print("Please run download_dataset.py first.")
         return
 
-    # Split by subject
-    train_recs, val_recs, test_recs = split_subjects(recordings)
+    train_recs, val_recs, test_recs, train_subjects, val_subjects, test_subjects = split_subjects(recordings)
 
-    # Process all data
-    X_train, y_train, X_val, y_val, X_test, y_test, metadata = process_all_recordings(
-        train_recs, val_recs, test_recs
+    processed = process_all_recordings(
+        train_recs, val_recs, test_recs, train_subjects, val_subjects, test_subjects
     )
 
-    if X_train is None:
+    if processed is None:
         print("ERROR: No data processed!")
         return
+    X_train, y_train, X_val, y_val, X_test, y_test, metadata, groups = processed
 
-    # Save data
-    save_processed_data(X_train, y_train, X_val, y_val, X_test, y_test, metadata)
+    output_name = 'processed_sequences.npz'
+    if args.output_tag:
+        output_name = f'processed_sequences_{args.output_tag}.npz'
+    save_processed_data(
+        X_train, y_train, X_val, y_val, X_test, y_test, metadata, groups, output_name
+    )
 
     # Generate visualization
     plot_preprocessing_overview(X_train, y_train, X_val, y_val, X_test, y_test, metadata)

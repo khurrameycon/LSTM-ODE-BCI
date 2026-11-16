@@ -41,6 +41,8 @@ import seaborn as sns
 from tqdm import tqdm
 import warnings
 
+from revision_common import initial_state_from_probs
+
 warnings.filterwarnings('ignore')
 
 # Set seeds
@@ -51,7 +53,7 @@ torch.manual_seed(42)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -283,13 +285,7 @@ class LSTMODEIntegration:
 
         # Infer initial state if not provided
         if initial_state is None:
-            # Map LSTM output to initial ODE state
-            if p_closed > 0.6:
-                initial_state = [0.2, 0.2, 0.6]  # Mostly fatigued
-            elif p_open > 0.6:
-                initial_state = [0.6, 0.2, 0.2]  # Mostly active
-            else:
-                initial_state = [0.33, 0.34, 0.33]  # Mixed
+            initial_state = initial_state_from_probs(p_open, p_closed)
 
         # Modulate ODE rates
         mod_params = self.modulate_ode_rates(p_closed, p_open)
@@ -373,13 +369,7 @@ class LSTMODEIntegration:
             p_open = all_lstm_probs[i, 0]
             p_closed = all_lstm_probs[i, 1]
 
-            # Infer initial state from LSTM output
-            if p_closed > 0.6:
-                initial_state = [0.2, 0.2, 0.6]  # Mostly fatigued
-            elif p_open > 0.6:
-                initial_state = [0.6, 0.2, 0.2]  # Mostly active
-            else:
-                initial_state = [0.33, 0.34, 0.33]  # Mixed
+            initial_state = initial_state_from_probs(p_open, p_closed)
 
             # Modulate ODE rates and solve
             mod_params = self.modulate_ode_rates(p_closed, p_open)

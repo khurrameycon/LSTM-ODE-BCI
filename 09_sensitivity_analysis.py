@@ -30,15 +30,17 @@ This module implements:
    - Sequence length
 """
 
-import numpy as np
-import pandas as pd
-import pickle
 import json
+import os
+import pickle
 import time
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from scipy import stats
 from scipy.stats import wilcoxon, ttest_rel, chi2_contingency
 import matplotlib.pyplot as plt
@@ -46,6 +48,14 @@ import seaborn as sns
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, matthews_corrcoef, confusion_matrix
 import warnings
+
+from revision_common import (
+    design_power,
+    paired_cohens_dz,
+    subject_bootstrap_ci,
+    subject_sign_test,
+)
+from sequence_mmap import WindowDataset, apply_gpu_cap, load_mmap_splits, mmap_ready
 
 warnings.filterwarnings('ignore')
 
@@ -57,7 +67,7 @@ torch.manual_seed(42)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -249,13 +259,16 @@ def load_data():
     print("Loading Data for Ablation Studies")
     print("=" * 60)
 
-    data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
-    X_train = data['X_train']
-    y_train = data['y_train']
-    X_val = data['X_val']
-    y_val = data['y_val']
-    X_test = data['X_test']
-    y_test = data['y_test']
+    if mmap_ready():
+        X_train, y_train, X_val, y_val, X_test, y_test, _ = load_mmap_splits()
+    else:
+        data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
+        X_train = data['X_train']
+        y_train = data['y_train']
+        X_val = data['X_val']
+        y_val = data['y_val']
+        X_test = data['X_test']
+        y_test = data['y_test']
 
     print(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
@@ -263,67 +276,76 @@ def load_data():
 
 
 def quick_train_evaluate(model, X_train, y_train, X_val, y_val, X_test, y_test,
-                         epochs=10, batch_size=512, lr=0.001):
-    """Quick training for ablation comparison."""
+                         epochs=40, batch_size=32, lr=3e-4, patience=8):
+    """Train on every training window and stop on validation F1.
+
+    This is the same data and stopping rule as the main LSTM. It does not
+    subsample 20,000 windows or stop after a fixed 10 epochs.
+    """
     model = model.to(DEVICE)
-
-    # Create data loaders (use subset for speed)
-    n_train = min(len(X_train), 20000)
-    indices = np.random.choice(len(X_train), n_train, replace=False)
-
-    train_dataset = TensorDataset(
-        torch.FloatTensor(X_train[indices]),
-        torch.LongTensor(y_train[indices])
+    batch_size = int(os.environ.get('EEG_BATCH', batch_size))
+    train_loader = DataLoader(
+        WindowDataset(X_train, y_train), batch_size=batch_size, shuffle=True, num_workers=0,
     )
-    val_dataset = TensorDataset(
-        torch.FloatTensor(X_val),
-        torch.LongTensor(y_val)
+    val_loader = DataLoader(
+        WindowDataset(X_val, y_val), batch_size=batch_size * 2, num_workers=0,
     )
-    test_dataset = TensorDataset(
-        torch.FloatTensor(X_test),
-        torch.LongTensor(y_test)
+    test_loader = DataLoader(
+        WindowDataset(X_test, y_test), batch_size=batch_size * 2, num_workers=0,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size * 2)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size * 2)
+    class_counts = np.bincount(np.asarray(y_train))
+    class_weights = torch.FloatTensor(len(y_train) / (len(class_counts) * class_counts)).to(DEVICE)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
-    # Training
-    model.train()
+    best_state = None
+    best_f1 = -1.0
+    wait = 0
     for epoch in range(epochs):
+        model.train()
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
             optimizer.zero_grad()
-            outputs = model(X_batch)
-            loss = criterion(outputs, y_batch)
+            loss = criterion(model(X_batch), y_batch)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-    # Evaluation
+        model.eval()
+        val_preds, val_true = [], []
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                outputs = model(X_batch.to(DEVICE))
+                val_preds.extend(outputs.argmax(dim=1).cpu().numpy())
+                val_true.extend(y_batch.numpy())
+        val_f1 = f1_score(val_true, val_preds, zero_division=0)
+        print(f"    epoch {epoch + 1}/{epochs} val F1 {val_f1:.4f}")
+        if val_f1 > best_f1:
+            best_f1 = val_f1
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
     model.eval()
     all_preds = []
-    all_labels = []
-
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            X_batch = X_batch.to(DEVICE)
-            outputs = model(X_batch)
-            preds = outputs.argmax(dim=1).cpu().numpy()
-            all_preds.extend(preds)
-            all_labels.extend(y_batch.numpy())
-
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-
+        for X_batch, _ in test_loader:
+            outputs = model(X_batch.to(DEVICE))
+            all_preds.extend(outputs.argmax(dim=1).cpu().numpy())
+    all_preds = np.asarray(all_preds)
     metrics = {
-        'accuracy': accuracy_score(all_labels, all_preds),
-        'f1': f1_score(all_labels, all_preds),
-        'mcc': matthews_corrcoef(all_labels, all_preds)
+        'accuracy': accuracy_score(y_test, all_preds),
+        'f1': f1_score(y_test, all_preds, zero_division=0),
+        'mcc': matthews_corrcoef(y_test, all_preds),
+        'protocol': 'all training windows, early stopping on validation F1',
     }
-
     return metrics, all_preds
 
 
@@ -378,45 +400,58 @@ def run_architecture_ablation(X_train, y_train, X_val, y_val, X_test, y_test):
     return results, predictions
 
 
+def _subject_ids(split='test'):
+    mmap_path = PROCESSED_DATA_PATH / 'mmap' / f'subject_id_{split}.npy'
+    if mmap_path.exists():
+        return np.load(mmap_path)
+    data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
+    key = f'subject_id_{split}'
+    if key not in data.files:
+        return None
+    return data[key]
+
+
 def run_statistical_comparison(y_test, predictions, baseline='Full Model'):
-    """Run statistical tests comparing models."""
+    """Compare classifiers on subject-level accuracy, not overlapping windows."""
     print("\n" + "=" * 60)
     print("Statistical Model Comparisons")
     print("=" * 60)
 
+    subject_ids = _subject_ids('test')
+    if subject_ids is None or len(subject_ids) != len(y_test):
+        raise RuntimeError(
+            "Subject ids are missing or do not match the test set. "
+            "Re-run 02_preprocessing.py. Window-level McNemar and Cohen's d "
+            "are not reported."
+        )
+
     results = {}
     baseline_preds = predictions[baseline]
+    baseline_correct = (baseline_preds == y_test).astype(float)
 
     for model_name, model_preds in predictions.items():
         if model_name == baseline:
             continue
-
-        # McNemar's test
-        stat, p_val, contingency = mcnemars_test(y_test, baseline_preds, model_preds)
-
-        # Cohen's d for accuracy
-        baseline_correct = (baseline_preds == y_test).astype(float)
         model_correct = (model_preds == y_test).astype(float)
-        d = cohens_d(baseline_correct, model_correct)
-
-        # Paired t-test
-        t_stat, t_pval = ttest_rel(baseline_correct, model_correct)
-
+        sign = subject_sign_test(baseline_correct, model_correct, subject_ids)
+        effect = paired_cohens_dz(baseline_correct, model_correct, subject_ids)
         results[model_name] = {
-            'mcnemar_stat': float(stat),
-            'mcnemar_p': float(p_val),
-            'mcnemar_significant': bool(p_val < 0.05),
-            'cohens_d': float(d),
-            'effect_size': interpret_cohens_d(d),
-            'paired_t_stat': float(t_stat),
-            'paired_t_p': float(t_pval),
-            'contingency_table': contingency.tolist()
+            'comparison_unit': 'subject-level accuracy',
+            'sign_test_p': sign['p_value'],
+            'subjects_baseline_better': sign['subjects_a_better'],
+            'subjects_model_better': sign['subjects_b_better'],
+            'ties': sign['ties'],
+            'cohens_dz': float(effect),
+            'cohens_dz_definition': (
+                "mean(subject accuracy_baseline - subject accuracy_model) / "
+                "sd of those paired subject differences"
+            ),
+            'effect_size': interpret_cohens_d(effect),
+            'significant': bool(sign['p_value'] < 0.05),
         }
-
         print(f"\n{baseline} vs {model_name}:")
-        print(f"  McNemar's test: chi2={stat:.2f}, p={p_val:.4f}")
-        print(f"  Cohen's d: {d:.3f} ({interpret_cohens_d(d)})")
-        print(f"  Paired t-test: t={t_stat:.2f}, p={t_pval:.4f}")
+        print(f"  Subject sign test p={sign['p_value']:.4f}")
+        print(f"  Cohen's d_z: {effect:.3f} ({interpret_cohens_d(effect)})")
 
     return results
 
@@ -462,29 +497,33 @@ def run_coupling_sensitivity(X_test, y_test):
 
 
 def compute_bootstrap_intervals(predictions, y_test, n_bootstrap=1000):
-    """Compute bootstrap confidence intervals for all models."""
+    """Subject-level bootstrap CIs. Windows are not resampled."""
     print("\n" + "=" * 60)
-    print("Bootstrap Confidence Intervals")
+    print("Subject-Level Bootstrap Confidence Intervals")
     print("=" * 60)
 
-    results = {}
+    subject_ids = _subject_ids('test')
+    if subject_ids is None or len(subject_ids) != len(y_test):
+        raise RuntimeError("Subject ids are required for the accuracy interval.")
 
+    results = {}
     for model_name, preds in predictions.items():
         correct = (preds == y_test).astype(float)
-
-        # Bootstrap CI for accuracy
-        acc_lower, acc_upper, acc_se = bootstrap_ci(correct, np.mean, n_bootstrap)
-        accuracy = np.mean(correct)
-
+        _, subject_acc = __import__('revision_common', fromlist=['subject_accuracy']).subject_accuracy(
+            correct, subject_ids
+        )
+        lower, upper, se = subject_bootstrap_ci(correct, subject_ids, n_bootstrap=n_bootstrap)
+        accuracy = float(np.mean(subject_acc))
         results[model_name] = {
-            'accuracy': float(accuracy),
-            'ci_lower': float(acc_lower),
-            'ci_upper': float(acc_upper),
-            'se': float(acc_se)
+            'accuracy': accuracy,
+            'ci_lower': float(lower),
+            'ci_upper': float(upper),
+            'se': float(se),
+            'unit': 'mean of subject-level accuracies',
+            'n_subjects': int(len(subject_acc)),
+            'subject_sd': float(np.std(subject_acc, ddof=1)) if len(subject_acc) > 1 else 0.0,
         }
-
-        print(f"{model_name}:")
-        print(f"  Accuracy: {accuracy:.4f} [{acc_lower:.4f}, {acc_upper:.4f}]")
+        print(f"{model_name}: {accuracy:.4f} [{lower:.4f}, {upper:.4f}]")
 
     return results
 
@@ -574,7 +613,7 @@ def plot_ablation_results(ablation_results, statistical_results, contributions,
     ax3 = fig.add_subplot(2, 3, 3)
     if statistical_results:
         model_names = list(statistical_results.keys())
-        cohens_d_values = [abs(statistical_results[m]['cohens_d']) for m in model_names]
+        cohens_d_values = [abs(statistical_results[m]['cohens_dz']) for m in model_names]
 
         colors = []
         for d in cohens_d_values:
@@ -617,12 +656,12 @@ def plot_ablation_results(ablation_results, statistical_results, contributions,
     ax5 = fig.add_subplot(2, 3, 5)
     if statistical_results:
         model_names = list(statistical_results.keys())
-        p_values = [statistical_results[m]['mcnemar_p'] for m in model_names]
+        p_values = [statistical_results[m]['sign_test_p'] for m in model_names]
 
         # Create significance matrix (comparing to full model)
         sig_matrix = np.zeros((len(model_names), 1))
         for i, m in enumerate(model_names):
-            sig_matrix[i, 0] = 1 if statistical_results[m]['mcnemar_p'] < 0.05 else 0
+            sig_matrix[i, 0] = 1 if statistical_results[m]['sign_test_p'] < 0.05 else 0
 
         im = ax5.imshow(sig_matrix, cmap='RdYlGn_r', aspect='auto', vmin=0, vmax=1)
         ax5.set_yticks(range(len(model_names)))
@@ -691,8 +730,8 @@ def create_results_tables(ablation_results, statistical_results, contributions):
         print(f"{'Model':<20} {'McNemar p':>12} {'Cohen d':>10} {'Effect':>12} {'Sig':>8}")
         print("-" * 80)
         for model, data in statistical_results.items():
-            sig = '*' if data['mcnemar_p'] < 0.05 else ''
-            print(f"{model:<20} {data['mcnemar_p']:>12.4f} {data['cohens_d']:>10.3f} "
+            sig = '*' if data['sign_test_p'] < 0.05 else ''
+            print(f"{model:<20} {data['sign_test_p']:>12.4f} {data['cohens_dz']:>10.3f} "
                   f"{data['effect_size']:>12} {sig:>8}")
         print("-" * 80)
 
@@ -703,6 +742,74 @@ def create_results_tables(ablation_results, statistical_results, contributions):
     }
 
 
+def run_hyperparameter_sensitivity(X_train, y_train, X_val, y_val, X_test, y_test):
+    """Retrain the full architecture at several dropout and hidden sizes.
+
+    Window length is a preprocessing choice. If
+    processed_sequences_win128.npz or processed_sequences_win512.npz exist,
+    one full model is trained on each. Otherwise the JSON records the
+    command that produces those files.
+    """
+    print("\n" + "=" * 60)
+    print("Hyperparameter sensitivity (full training protocol)")
+    print("=" * 60)
+    input_size = X_train.shape[2]
+    configs = [
+        {'name': 'hidden_64', 'hidden_size': 64, 'dropout': 0.4},
+        {'name': 'hidden_128', 'hidden_size': 128, 'dropout': 0.4},
+        {'name': 'hidden_256', 'hidden_size': 256, 'dropout': 0.4},
+        {'name': 'dropout_0.2', 'hidden_size': 256, 'dropout': 0.2},
+        {'name': 'dropout_0.5', 'hidden_size': 256, 'dropout': 0.5},
+    ]
+    results = {}
+    for config in configs:
+        print(f"\n  {config['name']}")
+        model = AblationLSTMModel(
+            input_size=input_size,
+            hidden_size=config['hidden_size'],
+            num_layers=3,
+            dropout=config['dropout'],
+            bidirectional=True,
+            use_attention=True,
+        )
+        metrics, _ = quick_train_evaluate(model, X_train, y_train, X_val, y_val, X_test, y_test)
+        results[config['name']] = {'config': config, 'metrics': metrics}
+        print(f"    Accuracy: {metrics['accuracy']:.4f}")
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    window_results = {}
+    for tag, length in (('win128', 128), ('win512', 512)):
+        path = PROCESSED_DATA_PATH / f'processed_sequences_{tag}.npz'
+        if not path.exists():
+            window_results[tag] = {
+                'status': 'not_run',
+                'command': f'python 02_preprocessing.py --sequence-length {length} --output-tag {tag}',
+            }
+            continue
+        extra = np.load(path)
+        model = AblationLSTMModel(
+            input_size=extra['X_train'].shape[2], hidden_size=256, num_layers=3,
+            dropout=0.4, bidirectional=True, use_attention=True,
+        )
+        metrics, _ = quick_train_evaluate(
+            model, extra['X_train'], extra['y_train'], extra['X_val'], extra['y_val'],
+            extra['X_test'], extra['y_test'],
+        )
+        window_results[tag] = {'status': 'run', 'sequence_length': length, 'metrics': metrics}
+        del model
+    return {'hidden_and_dropout': results, 'window_length': window_results}
+
+
+def _json_default(value):
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f'Not serializable: {type(value)}')
+
+
 def main():
     """Main execution function."""
     print("\n" + "=" * 60)
@@ -711,6 +818,7 @@ def main():
     print("Authors: Ayesha, Muhammad Khurram Umair")
     print("Device:", DEVICE)
     print("=" * 60)
+    apply_gpu_cap()
 
     start_time = time.time()
 
@@ -734,7 +842,10 @@ def main():
     # 6. Coupling sensitivity (if available)
     coupling_results = run_coupling_sensitivity(X_test, y_test)
 
-    # 7. Generate visualizations
+    hyperparameter_results = run_hyperparameter_sensitivity(
+        X_train, y_train, X_val, y_val, X_test, y_test
+    )
+
     plot_ablation_results(ablation_results, statistical_results, contributions,
                          bootstrap_results, FIGURES_PATH)
 
@@ -749,12 +860,17 @@ def main():
         } for m in ablation_results},
         'statistical_tests': statistical_results,
         'bootstrap_ci': bootstrap_results,
+        'power_analysis': design_power(
+            bootstrap_results['Full Model']['n_subjects'],
+            subject_sd=max(bootstrap_results['Full Model']['subject_sd'], 1e-6),
+        ),
         'component_contributions': {k: float(v) for k, v in contributions.items()},
-        'coupling_sensitivity': coupling_results
+        'coupling_sensitivity': coupling_results,
+        'hyperparameter_sensitivity': hyperparameter_results,
     }
 
     with open(RESULTS_PATH / 'sensitivity_analysis.json', 'w') as f:
-        json.dump(all_results, f, indent=2)
+        json.dump(all_results, f, indent=2, default=_json_default)
 
     print("\nSaved: sensitivity_analysis.json")
 
@@ -774,8 +890,8 @@ def main():
 
     print("\n2. Statistical Significance:")
     for model, data in statistical_results.items():
-        sig = "significant" if data['mcnemar_p'] < 0.05 else "not significant"
-        print(f"   - {model}: {sig} (p={data['mcnemar_p']:.4f})")
+        sig = "significant" if data['sign_test_p'] < 0.05 else "not significant"
+        print(f"   - {model}: {sig} (p={data['sign_test_p']:.4f})")
 
     return all_results
 

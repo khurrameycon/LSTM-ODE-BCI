@@ -1,0 +1,109 @@
+{
+  "full_model_accuracy": 0.8879049623769084,
+  "channel_ablation": {
+    "frontopolar": {
+      "channels": [
+        "Fp1",
+        "AF3",
+        "AF7",
+        "Fpz",
+        "Fp2",
+        "AF4",
+        "AF8"
+      ],
+      "accuracy": 0.5834845515472648,
+      "accuracy_drop": 0.30442041082964366
+    },
+    "occipital": {
+      "channels": [
+        "PO3",
+        "PO7",
+        "Oz",
+        "O1",
+        "POz",
+        "PO4",
+        "PO8",
+        "O2"
+      ],
+      "accuracy": 0.8487333962401103,
+      "accuracy_drop": 0.039171566136798064
+    }
+  },
+  "spectral_by_confidence": {
+    "confident_open": {
+      "theta_relative": {
+        "n": 24643,
+        "mean": 0.23871530717070152,
+        "ci95": [
+          0.23730001648011684,
+          0.2401305978612862
+        ]
+      },
+      "alpha_relative": {
+        "n": 24643,
+        "mean": 0.21290629196526414,
+        "ci95": [
+          0.21135709353499618,
+          0.2144554903955321
+        ]
+      }
+    },
+    "uncertain": {
+      "theta_relative": {
+        "n": 183,
+        "mean": 0.29711119690146603,
+        "ci95": [
+          0.2779408327557183,
+          0.3162815610472138
+        ]
+      },
+      "alpha_relative": {
+        "n": 183,
+        "mean": 0.3002387380705831,
+        "ci95": [
+          0.2811290858815425,
+          0.3193483902596237
+        ]
+      }
+    },
+    "confident_closed": {
+      "theta_relative": {
+        "n": 16505,
+        "mean": 0.3198655079588378,
+        "ci95": [
+          0.3178757337440118,
+          0.32185528217366377
+        ]
+      },
+      "alpha_relative": {
+        "n": 16505,
+        "mean": 0.3417970252058265,
+        "ci95": [
+          0.33971844875283586,
+          0.34387560165881714
+        ]
+      }
+    },
+    "uncertain_vs_confident_open_theta": {
+      "u": 2819865.0,
+      "p_value": 4.926962837714655e-09
+    },
+    "uncertain_vs_confident_open_alpha": {
+      "u": 3110081.0,
+      "p_value": 8.431829384907488e-19
+    },
+    "uncertain_vs_confident_closed_theta": {
+      "u": 1358367.0,
+      "p_value": 0.019141539931297302
+    },
+    "uncertain_vs_confident_closed_alpha": {
+      "u": 1237543.0,
+      "p_value": 2.5881123292492703e-05
+    }
+  },
+  "reading": "If zeroing frontopolar channels removes more accuracy than zeroing occipital channels, the classifier is using the sites where blinks and eye movements are strongest. That does not by itself prove an ocular artifact, and it does not support a higher-order cognitive claim.",
+  "drops": {
+    "frontopolar": 0.30442041082964366,
+    "occipital": 0.039171566136798064
+  }
+}

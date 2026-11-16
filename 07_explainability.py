@@ -52,7 +52,7 @@ torch.manual_seed(42)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -756,7 +756,7 @@ def analyze_ode_dynamics(ode_params):
         print(f"  {param} = {value:.4f}")
         print(f"    Transition: {transition}")
         print(f"    Meaning: {meaning}")
-        print(f"    Time constant: {time_constant:.2f} time units")
+        print(f"    1/rate = {time_constant:.2f}; use this only if the identifiability profile marks {param}")
 
     # Dominant pathways
     print("\nDominant Pathways:")
@@ -765,21 +765,14 @@ def analyze_ode_dynamics(ode_params):
         transition, meaning = interpretations[param]
         print(f"  {i}. {transition} (k={value:.4f})")
 
-    # Recovery vs Fatigue balance
-    recovery_rate = params['k_fa'] + params['k_fp'] + params['k_pa']
-    fatigue_rate = params['k_af'] + params['k_pf']
-    balance = recovery_rate / (fatigue_rate + 1e-10)
-
-    print(f"\nRecovery/Fatigue Balance: {balance:.2f}")
-    if balance > 1:
-        print("  System tends toward recovery")
-    else:
-        print("  System tends toward fatigue")
+    print("\nPer-rate time constants are reported by 05_ode_model.py only for rates")
+    print("the identifiability profile marks as constrained. Rates are not added")
+    print("across compartments, and no fatigue-accumulation ratio is computed.")
 
     return {
         'params': params,
         'interpretations': {k: list(v) for k, v in interpretations.items()},
-        'balance': balance
+        'fatigue_accumulation_ratio': None,
     }
 
 
@@ -905,7 +898,7 @@ def plot_attention_explainability(attention_weights, y_test, output_path):
 
     ax.plot(time_steps, mean_attn, 'b-', linewidth=2, label='Mean Attention')
     ax.fill_between(time_steps, mean_attn - 1.96*std_attn, mean_attn + 1.96*std_attn,
-                   alpha=0.3, color='blue', label='95% CI')
+                   alpha=0.3, color='blue', label='±1.96 SD')  # spread of windows, not a CI
     ax.axhline(y=1/len(mean_attn), color='red', linestyle='--', label='Uniform')
     ax.set_xlabel('Time Step (in 0.5s window)')
     ax.set_ylabel('Attention Weight')
@@ -982,9 +975,11 @@ def plot_attention_explainability(attention_weights, y_test, output_path):
     plt.tight_layout()
     plt.savefig(output_path / 'fig19_attention_explainability.png', dpi=300, bbox_inches='tight')
     plt.savefig(output_path / 'fig19_attention_explainability.pdf', bbox_inches='tight')
+    plt.savefig(output_path / 'fig08_temporal_attention.png', dpi=300, bbox_inches='tight')
+    plt.savefig(output_path / 'fig08_temporal_attention.pdf', bbox_inches='tight')
     plt.close()
 
-    print("Saved: fig19_attention_explainability.png/pdf")
+    print("Saved: fig19_attention_explainability.png/pdf and fig08_temporal_attention.png/pdf")
 
 
 def plot_ode_explainability(ode_params, output_path):
@@ -1071,25 +1066,21 @@ def plot_ode_explainability(ode_params, output_path):
     ax.axis('off')
     ax.set_title('State Transition Network', fontweight='bold')
 
-    # 4. Recovery vs Fatigue balance
+    # 4. Summing rates across compartments is not a proportion.
     ax = axes[1, 1]
-    recovery = params['k_fa'] + params['k_fp'] + params['k_pa']
-    fatigue = params['k_af'] + params['k_pf']
-
-    categories = ['Recovery\n(F→A, F→P, P→A)', 'Fatigue\n(A→F, P→F)']
-    values = [recovery, fatigue]
-
-    colors = ['#2ecc71', '#e74c3c']
-    bars = ax.bar(categories, values, color=colors, edgecolor='black')
-
-    ax.set_ylabel('Aggregate Rate')
-    ax.set_title('Recovery vs Fatigue Dynamics', fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='y')
-
-    balance = recovery / fatigue if fatigue > 0 else float('inf')
-    ax.text(0.5, max(values) * 1.1, f'Balance Ratio: {balance:.2f}',
-           ha='center', fontsize=12, fontweight='bold',
-           transform=ax.get_xaxis_transform())
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_title('Per-compartment sums are not a fatigue ratio', fontweight='bold')
+    ax.text(
+        0.5, 0.5,
+        'Rates that act on different compartments\n'
+        'are not added into one ratio.\n'
+        'See ode_results.json for which rates\n'
+        'the binary labels identify.',
+        ha='center', va='center', fontsize=11, transform=ax.transAxes,
+    )
+    ax.set_xticks([])
+    ax.set_yticks([])
 
     plt.tight_layout()
     plt.savefig(output_path / 'fig20_ode_explainability.png', dpi=300, bbox_inches='tight')
@@ -1227,11 +1218,13 @@ def generate_explainability_summary(gradient_importance, attention_analysis, ode
         },
         'attention_patterns': attention_analysis,
         'ode_dynamics': ode_analysis,
-        'clinical_insights': {
-            'primary_indicators': 'Occipital (O1, O2, Oz) and Parietal (P7, P8) regions show highest importance for eye state detection',
-            'temporal_pattern': 'Attention focuses on specific temporal windows within 0.5s EEG segments',
-            'state_dynamics': 'Recovery processes dominate system dynamics, suggesting natural resilience' if ode_analysis['balance'] > 1 else 'Fatigue processes dominate, suggesting vigilance decrement'
-        }
+        'channel_note': (
+            'Channel ranks are reported as measured. Frontopolar importance is not '
+            'interpreted as a higher-order cognitive signature.'
+        ),
+        'ode_note': (
+            'Passive is unobserved. No fatigue-accumulation ratio is reported.'
+        ),
     }
 
     # Add SHAP results if available
@@ -1267,8 +1260,7 @@ def generate_explainability_summary(gradient_importance, attention_analysis, ode
         print(f"   Top EEG Channels (SHAP): {', '.join(summary['channel_importance']['shap_based']['top_3_channels'])}")
     print(f"2. Occipital Region Importance: {summary['channel_importance']['gradient_based']['occipital_importance']:.2%}")
     print(f"3. Attention Entropy: {attention_analysis['entropy']:.3f} (lower = more focused)")
-    print(f"4. Recovery/Fatigue Balance: {ode_analysis['balance']:.2f}")
-    print(f"\n5. Clinical Insight: {summary['clinical_insights']['primary_indicators']}")
+    print("4. ODE: Passive is unobserved. No fatigue-accumulation ratio is reported.")
 
     return summary
 

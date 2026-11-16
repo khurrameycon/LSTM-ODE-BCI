@@ -27,6 +27,12 @@ Pipeline
 6. Per-channel z-score using *training-subject* statistics.
 7. Subject-wise split: 6 train (A01-A06) / 1 val (A07) / 2 test (A08-A09).
 8. Save as outputs/processed_data/bciiv2a_sequences.npz
+
+The four motor-imagery classes are not mapped onto Active, Passive, and
+Fatigued. That mapping has no correspondence to left hand, right hand,
+feet, or tongue, so the cognitive ODE is not applied to this dataset.
+Within-subject classification, which is the usual BCI-IV-2a protocol,
+is in 12c_within_subject_mi.py.
 """
 
 import json
@@ -44,7 +50,7 @@ warnings.filterwarnings('ignore')
 np.random.seed(42)
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 DATASET_PATH = Path(__file__).parent / 'archive (1)'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 PROCESSED_DATA_PATH = OUTPUT_PATH / 'processed_data'
@@ -140,7 +146,7 @@ def extract_trials(runs):
 def process_subject_group(subject_ids, label):
     """Load + slice + return X, y for a list of subject IDs."""
     print(f"\n--- {label}: {subject_ids} ---")
-    X_all, y_all = [], []
+    X_all, y_all, subject_labels = [], [], []
     for sid in subject_ids:
         mat_path = DATASET_PATH / f"{sid}.mat"
         if not mat_path.exists():
@@ -151,11 +157,13 @@ def process_subject_group(subject_ids, label):
               f"class counts={np.bincount(y, minlength=4).tolist()}")
         X_all.append(X)
         y_all.append(y)
+        subject_labels.append(np.full(len(y), sid))
     X = np.concatenate(X_all, axis=0)
     y = np.concatenate(y_all, axis=0)
+    subjects = np.concatenate(subject_labels, axis=0)
     print(f"  {label} total: X={X.shape}  y={y.shape}  "
           f"classes={np.bincount(y, minlength=4).tolist()}")
-    return X, y
+    return X, y, subjects
 
 
 def zscore(X, mean=None, std=None):
@@ -183,9 +191,15 @@ def main():
           f"({TRIAL_LEN_SAMPLES/SAMPLING_RATE:.1f} s) starting "
           f"{TRIAL_OFFSET_SAMPLES/SAMPLING_RATE:.1f} s after cue onset")
 
-    X_train, y_train = process_subject_group(TRAIN_SUBJECTS, "TRAIN")
-    X_val, y_val = process_subject_group(VAL_SUBJECTS, "VAL")
-    X_test, y_test = process_subject_group(TEST_SUBJECTS, "TEST")
+    X_train, y_train, s_train = process_subject_group(TRAIN_SUBJECTS, "TRAIN")
+    X_val, y_val, s_val = process_subject_group(VAL_SUBJECTS, "VAL")
+    X_test, y_test, s_test = process_subject_group(TEST_SUBJECTS, "TEST")
+
+    # Copy before the cross-subject z-score. Within-subject folds normalize
+    # from their own training trials.
+    X_all = np.concatenate([X_train, X_val, X_test], axis=0)
+    y_all = np.concatenate([y_train, y_val, y_test], axis=0)
+    subject_all = np.concatenate([s_train, s_val, s_test], axis=0)
 
     # Z-score using train stats only
     X_train, mean, std = zscore(X_train)
@@ -198,6 +212,7 @@ def main():
         X_train=X_train, y_train=y_train,
         X_val=X_val, y_val=y_val,
         X_test=X_test, y_test=y_test,
+        X_all=X_all, y_all=y_all, subject_all=subject_all,
     )
     print(f"\nSaved: {out_path}  ({out_path.stat().st_size/1e6:.1f} MB)")
 

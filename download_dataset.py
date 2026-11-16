@@ -23,7 +23,7 @@ VERSION = "1.0.0"
 BASE_URL = f"https://s3.amazonaws.com/openneuro.org/{DATASET_ID}/"
 
 # Local paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 DATASET_PATH = BASE_PATH / 'Dataset' / 'II'
 
 # What to download
@@ -34,7 +34,7 @@ FILE_EXTENSIONS = ['.vhdr', '.vmrk', '.eeg']
 
 # Download settings
 MAX_WORKERS = 4
-TIMEOUT = 60
+TIMEOUT = 300
 MAX_RETRIES = 3
 
 
@@ -198,8 +198,8 @@ def main(auto_confirm=False):
     print("\nStarting download (this may take a while)...")
     print("Note: Files already downloaded will be skipped.\n")
 
-    # Use sequential download for reliability
-    results = download_sequential(files)
+    # Parallel download. Files already present are skipped.
+    results = download_all_parallel(files, max_workers=6)
 
     # Summary
     print("\n" + "=" * 60)

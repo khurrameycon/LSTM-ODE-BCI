@@ -1,0 +1,53 @@
+{
+  "protocol": "5-fold within-subject EEGNet",
+  "ode_applied": false,
+  "reason": "Active, Passive, and Fatigued have no correspondence to left hand, right hand, feet, and tongue.",
+  "subjects": [
+    {
+      "subject": "A01T",
+      "mean_accuracy": 0.6004713804713805,
+      "mean_macro_f1": 0.5705309571027034
+    },
+    {
+      "subject": "A02T",
+      "mean_accuracy": 0.37037037037037035,
+      "mean_macro_f1": 0.36556765639824107
+    },
+    {
+      "subject": "A03T",
+      "mean_accuracy": 0.6703703703703703,
+      "mean_macro_f1": 0.6452022684981616
+    },
+    {
+      "subject": "A04T",
+      "mean_accuracy": 0.35885341074020316,
+      "mean_macro_f1": 0.3500883768350035
+    },
+    {
+      "subject": "A05T",
+      "mean_accuracy": 0.36277213352685045,
+      "mean_macro_f1": 0.36310140346775255
+    },
+    {
+      "subject": "A06T",
+      "mean_accuracy": 0.37410147991543347,
+      "mean_macro_f1": 0.3727367430500771
+    },
+    {
+      "subject": "A07T",
+      "mean_accuracy": 0.44646464646464645,
+      "mean_macro_f1": 0.43116471273428425
+    },
+    {
+      "subject": "A08T",
+      "mean_accuracy": 0.5989840348330915,
+      "mean_macro_f1": 0.5880389055389056
+    },
+    {
+      "subject": "A09T",
+      "mean_accuracy": 0.6418439716312057,
+      "mean_macro_f1": 0.6248959822375577
+    }
+  ],
+  "mean_accuracy": 0.4915813109248391
+}

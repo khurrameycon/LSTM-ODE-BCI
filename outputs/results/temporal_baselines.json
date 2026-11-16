@@ -1,0 +1,27 @@
+{
+  "unit": "windows that stay inside one recording",
+  "step_seconds": 0.256,
+  "methods": {
+    "lstm": {
+      "accuracy_vs_eye_state_label": 0.8879049623769084,
+      "mean_label_flips_per_second": 0.18236213119187278
+    },
+    "moving_average": {
+      "accuracy_vs_eye_state_label": 0.8978974619534974,
+      "mean_label_flips_per_second": 0.048577181024320466
+    },
+    "majority_vote": {
+      "accuracy_vs_eye_state_label": 0.8973167840120007,
+      "mean_label_flips_per_second": 0.04866978267071797
+    },
+    "hmm": {
+      "accuracy_vs_eye_state_label": 0.8925261909946529,
+      "mean_label_flips_per_second": 0.10343457507219328
+    },
+    "ode": {
+      "accuracy_vs_eye_state_label": 0.8866710217512279,
+      "mean_label_flips_per_second": 0.18103480738226327
+    }
+  },
+  "note": "A lower flip rate without a gain in label accuracy is smoothing, not a better classifier. The ODE column is that comparison."
+}

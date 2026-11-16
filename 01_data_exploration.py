@@ -42,7 +42,7 @@ plt.rcParams['figure.dpi'] = 100
 plt.rcParams['savefig.dpi'] = 300
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 DATASET_PATH = BASE_PATH / 'Dataset' / 'II'
 OUTPUT_PATH = BASE_PATH / 'outputs' / 'figures'
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)

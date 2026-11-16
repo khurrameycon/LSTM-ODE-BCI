@@ -1,0 +1,56 @@
+{
+  "EEGNet vs DeepConvNet": {
+    "p_value": 0.453125,
+    "subjects_a_better": 2,
+    "subjects_b_better": 5,
+    "ties": 1,
+    "unit": "subject",
+    "cohens_dz": -0.01789083771543207,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  },
+  "EEGNet vs CNN-LSTM": {
+    "p_value": 1.0,
+    "subjects_a_better": 4,
+    "subjects_b_better": 4,
+    "ties": 0,
+    "unit": "subject",
+    "cohens_dz": -0.17007599529695286,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  },
+  "EEGNet vs EEG-Transformer": {
+    "p_value": 1.0,
+    "subjects_a_better": 4,
+    "subjects_b_better": 4,
+    "ties": 0,
+    "unit": "subject",
+    "cohens_dz": 0.022282299567357673,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  },
+  "DeepConvNet vs CNN-LSTM": {
+    "p_value": 1.0,
+    "subjects_a_better": 4,
+    "subjects_b_better": 4,
+    "ties": 0,
+    "unit": "subject",
+    "cohens_dz": -0.14304629182593734,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  },
+  "DeepConvNet vs EEG-Transformer": {
+    "p_value": 0.2890625,
+    "subjects_a_better": 6,
+    "subjects_b_better": 2,
+    "ties": 0,
+    "unit": "subject",
+    "cohens_dz": 0.029437135244786496,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  },
+  "CNN-LSTM vs EEG-Transformer": {
+    "p_value": 1.0,
+    "subjects_a_better": 4,
+    "subjects_b_better": 4,
+    "ties": 0,
+    "unit": "subject",
+    "cohens_dz": 0.25855418690605886,
+    "cohens_dz_definition": "mean paired subject-level accuracy difference divided by the SD of those differences"
+  }
+}

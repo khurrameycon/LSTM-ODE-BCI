@@ -15,6 +15,7 @@ Improvements:
 - Data augmentation for robustness
 """
 
+import os
 import sys
 import time
 import numpy as np
@@ -26,6 +27,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from sequence_mmap import WindowDataset, apply_gpu_cap, load_mmap_splits, mmap_ready, worker_count
 from torch.cuda.amp import GradScaler, autocast  # Mixed precision training
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
@@ -34,6 +36,8 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+
+from revision_common import claim_or_wait, release_lock, subject_bootstrap_ci
 
 warnings.filterwarnings('ignore')
 
@@ -49,7 +53,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {DEVICE}")
 
 # Paths
-BASE_PATH = Path(__file__).parent.parent
+BASE_PATH = Path(__file__).parent
 PROCESSED_DATA_PATH = BASE_PATH / 'outputs' / 'processed_data'
 OUTPUT_PATH = BASE_PATH / 'outputs'
 MODELS_PATH = OUTPUT_PATH / 'models'
@@ -253,29 +257,37 @@ def load_data():
     print("Loading Processed Data")
     print("=" * 60)
 
+    if os.environ.get("EEG_MMAP") == "1" and mmap_ready():
+        print("Loading memory-mapped sequences (no full-array copy)")
+        return load_mmap_splits()
+
     data = np.load(PROCESSED_DATA_PATH / 'processed_sequences.npz')
 
     X_train = data['X_train']
     y_train = data['y_train']
     X_test = data['X_test']
     y_test = data['y_test']
+    subject_id_test = data['subject_id_test'] if 'subject_id_test' in data.files else None
 
-    # Check if validation set exists and has data (may be empty for single-subject runs)
     if 'X_val' in data.files and len(data['X_val']) > 0:
         X_val = data['X_val']
         y_val = data['y_val']
+    elif 'subject_id_train' in data.files:
+        subjects = np.array(sorted(set(data['subject_id_train'].tolist())))
+        rng = np.random.RandomState(42)
+        rng.shuffle(subjects)
+        n_val = max(1, int(round(len(subjects) * 0.15)))
+        val_subjects = set(subjects[:n_val])
+        train_ids = data['subject_id_train']
+        val_mask = np.array([subject in val_subjects for subject in train_ids])
+        X_val, y_val = X_train[val_mask], y_train[val_mask]
+        X_train, y_train = X_train[~val_mask], y_train[~val_mask]
+        print(f"Held out {n_val} training subjects for validation")
     else:
-        # Split training data to create validation set (15% of training)
-        n_val = int(len(X_train) * 0.15)
-        indices = np.random.permutation(len(X_train))
-        val_indices = indices[:n_val]
-        train_indices = indices[n_val:]
-
-        X_val = X_train[val_indices]
-        y_val = y_train[val_indices]
-        X_train = X_train[train_indices]
-        y_train = y_train[train_indices]
-        print("Created validation set from training data (15%)")
+        raise RuntimeError(
+            "Validation subjects are missing. Re-run 02_preprocessing.py. "
+            "A random window split is not used."
+        )
 
     print(f"X_train: {X_train.shape}")
     print(f"X_val: {X_val.shape}")
@@ -284,7 +296,7 @@ def load_data():
     print(f"Sequence length: {X_train.shape[1]}")
     print(f"Class balance - Train: {np.mean(y_train):.1%}, Val: {np.mean(y_val):.1%}, Test: {np.mean(y_test):.1%}")
 
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train, y_train, X_val, y_val, X_test, y_test, subject_id_test
 
 
 def augment_data(X, y, noise_factor=0.05, time_shift_max=5):
@@ -342,23 +354,26 @@ def create_dataloaders(X_train, y_train, X_val, y_val, X_test, y_test,
     - Validation/test batch: 1024 (no gradients needed)
     - Multi-worker data loading with pinned memory
     """
-    # Convert to tensors
-    X_train_t = torch.FloatTensor(X_train)
-    y_train_t = torch.LongTensor(y_train)
-    X_val_t = torch.FloatTensor(X_val)
-    y_val_t = torch.LongTensor(y_val)
-    X_test_t = torch.FloatTensor(X_test)
-    y_test_t = torch.LongTensor(y_test)
-
-    # Create datasets
-    train_dataset = TensorDataset(X_train_t, y_train_t)
-    val_dataset = TensorDataset(X_val_t, y_val_t)
-    test_dataset = TensorDataset(X_test_t, y_test_t)
+    use_mmap = isinstance(X_train, np.memmap)
+    if use_mmap:
+        train_dataset = WindowDataset(X_train, y_train)
+        val_dataset = WindowDataset(X_val, y_val)
+        test_dataset = WindowDataset(X_test, y_test)
+    else:
+        X_train_t = torch.FloatTensor(X_train)
+        y_train_t = torch.LongTensor(y_train)
+        X_val_t = torch.FloatTensor(X_val)
+        y_val_t = torch.LongTensor(y_val)
+        X_test_t = torch.FloatTensor(X_test)
+        y_test_t = torch.LongTensor(y_test)
+        train_dataset = TensorDataset(X_train_t, y_train_t)
+        val_dataset = TensorDataset(X_val_t, y_val_t)
+        test_dataset = TensorDataset(X_test_t, y_test_t)
 
     # Weighted sampling for training
-    class_counts = np.bincount(y_train)
+    class_counts = np.bincount(np.asarray(y_train))
     class_weights = 1.0 / class_counts
-    sample_weights = [class_weights[y] for y in y_train]
+    sample_weights = class_weights[np.asarray(y_train)]
 
     sampler = WeightedRandomSampler(
         weights=sample_weights,
@@ -366,38 +381,35 @@ def create_dataloaders(X_train, y_train, X_val, y_val, X_test, y_test,
         replacement=True
     )
 
-    # Optimized DataLoader settings for GPU
-    # Note: On Windows, num_workers>0 can cause issues, so we check platform
     import platform
-    if platform.system() == 'Windows':
-        num_workers = 0  # Windows multiprocessing issues
-        persistent_workers = False
-    else:
-        num_workers = 8
-        persistent_workers = True
+    num_workers = worker_count(0 if use_mmap or platform.system() == 'Windows' else 8)
+    persistent_workers = num_workers > 0
+    pin = torch.cuda.is_available()
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
+        pin_memory=pin,
         prefetch_factor=2 if num_workers > 0 else None,
-        persistent_workers=persistent_workers if num_workers > 0 else False
+        persistent_workers=persistent_workers,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=val_batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=pin,
+        persistent_workers=persistent_workers,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=val_batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=pin,
+        persistent_workers=persistent_workers,
     )
 
     return train_loader, val_loader, test_loader
@@ -595,7 +607,7 @@ def train_model(model, train_loader, val_loader, y_train, epochs=100,
     return model, history
 
 
-def evaluate_model(model, test_loader, y_test):
+def evaluate_model(model, test_loader, y_test, subject_ids=None):
     """Comprehensive model evaluation."""
     print("\n" + "=" * 60)
     print("Evaluating LSTM Model")
@@ -637,14 +649,13 @@ def evaluate_model(model, test_loader, y_test):
     mcc = matthews_corrcoef(y_test, y_pred)
     cm = confusion_matrix(y_test, y_pred)
 
-    # Bootstrap CI
-    n_bootstrap = 1000
-    bootstrap_accs = []
-    for _ in range(n_bootstrap):
-        indices = np.random.choice(len(y_test), len(y_test), replace=True)
-        bootstrap_accs.append(accuracy_score(y_test[indices], y_pred[indices]))
-    ci_low = np.percentile(bootstrap_accs, 2.5)
-    ci_high = np.percentile(bootstrap_accs, 97.5)
+    if subject_ids is None or len(subject_ids) != len(y_test):
+        raise RuntimeError(
+            "Subject ids are required. The accuracy interval resamples subjects, "
+            "not overlapping windows."
+        )
+    correct = (y_pred == y_test).astype(float)
+    ci_low, ci_high, _ = subject_bootstrap_ci(correct, subject_ids)
 
     print(f"\nTest Set Metrics:")
     print(f"  Accuracy:  {accuracy:.4f}")
@@ -667,6 +678,7 @@ def evaluate_model(model, test_loader, y_test):
         'mcc': mcc,
         'accuracy_ci_low': ci_low,
         'accuracy_ci_high': ci_high,
+        'ci_unit': 'subject-level bootstrap',
         'confusion_matrix': cm.tolist(),
         'y_pred': y_pred.tolist(),
         'y_prob': y_prob.tolist()
@@ -840,8 +852,32 @@ def compare_with_baseline(lstm_results, output_path):
         json.dump(all_results, f, indent=2)
 
 
+def _lstm_ready():
+    path = RESULTS_PATH / 'lstm_results.json'
+    if not path.exists():
+        return False
+    try:
+        with open(path) as handle:
+            return 'accuracy' in json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def main():
     """Main execution function."""
+    lock_path = MODELS_PATH / 'lstm_training.lock'
+    if not claim_or_wait(lock_path, _lstm_ready):
+        print("LSTM results already exist. Skipping training.")
+        return None
+    try:
+        return _train_lstm()
+    finally:
+        release_lock(lock_path)
+
+
+def _train_lstm():
+    """Main execution function."""
+    apply_gpu_cap()
     print("\n" + "=" * 60)
     print("ENHANCED LSTM-ATTENTION MODEL TRAINING (GPU OPTIMIZED)")
     print("=" * 60)
@@ -853,18 +889,32 @@ def main():
     print("=" * 60)
 
     # 1. Load data
-    X_train, y_train, X_val, y_val, X_test, y_test = load_data()
+    X_train, y_train, X_val, y_val, X_test, y_test, subject_id_test = load_data()
 
     # 2. Data augmentation (light augmentation for 30-subject dataset)
     print("\n" + "=" * 60)
     print("Applying Light Data Augmentation")
     print("=" * 60)
-    X_train_aug, y_train_aug = augment_data(X_train, y_train, noise_factor=0.01)
-    print(f"Augmented training data: {X_train_aug.shape}")
+    with open('/proc/meminfo') as meminfo:
+        available_bytes = next(
+            int(line.split()[1]) * 1024
+            for line in meminfo if line.startswith('MemAvailable')
+        )
+    if X_train.nbytes * 3 > available_bytes * 0.55:
+        print("Skipping augmentation: three copies of the training set would exceed available RAM.")
+        X_train_aug, y_train_aug = X_train, y_train
+    else:
+        X_train_aug, y_train_aug = augment_data(X_train, y_train, noise_factor=0.01)
+    print(f"Training data: {X_train_aug.shape}")
 
     # 3. Create dataloaders (optimized for RTX 3090)
-    batch_size = 512  # Fits in 24GB VRAM
-    val_batch_size = 1024  # Larger for inference (no gradients)
+    if os.environ.get("EEG_BATCH"):
+        batch_size = int(os.environ["EEG_BATCH"])
+    elif torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory >= 16 * (1024 ** 3):
+        batch_size = 512
+    else:
+        batch_size = 128
+    val_batch_size = int(os.environ.get("EEG_VAL_BATCH", "1024"))
     train_loader, val_loader, test_loader = create_dataloaders(
         X_train_aug, y_train_aug, X_val, y_val, X_test, y_test,
         batch_size=batch_size, val_batch_size=val_batch_size
@@ -906,7 +956,9 @@ def main():
     )
 
     # 6. Evaluate
-    results, attention_weights = evaluate_model(model, test_loader, y_test)
+    results, attention_weights = evaluate_model(
+        model, test_loader, y_test, subject_ids=subject_id_test
+    )
 
     # 7. Plots
     plot_training_history(history, FIGURES_PATH)
@@ -949,4 +1001,4 @@ def main():
 
 
 if __name__ == "__main__":
-    model, results, attention = main()
+    main()
